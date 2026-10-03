@@ -1,4 +1,0 @@
-# Settings page + composer mic + host route for desktop dictation.
-- insert:
-    - id: dsh-desktop-voice
-      name: dsh-desktop-voice

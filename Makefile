@@ -1,170 +1,28 @@
-PYTHON      ?= python3
-CARGO       ?= cargo
-PREFIX      ?= $(HOME)/.local
-APP_ID      := io.github.tommyfang.DshDesktop
-DSH_VERSION := 0.1.0-rc.7
-NODE_VERSION := 24.19.0
-MODLENS_VERSION := 3.16.6
-MARKET_VERSION := 1.11.3
-ANCHORED_COMMIT := ffb845c5480adc953392a6db6f8a98ede621174b
-ANCHORED_REPO := https://github.com/xiaobright/dsh-anchored-standard.git
-VENDOR_DIR  := vendor/dsh-prefix
-VENDOR_ARCHIVE := vendor/dsh-prefix.tar.gz
-VENDOR_ARCHIVE_MAX_BYTES := 45000000
-MODLENS_DIR := vendor/modlens
-MODLENS_ARCHIVE := vendor/modlens.tar.gz
-MARKET_DIR := vendor/dshmarket
-MARKET_ARCHIVE := vendor/dshmarket.tar.gz
-ANCHORED_DIR := vendor/anchored-standard
-ZERO_DIR := vendor/zero-anchored-standard
-FLATPAK     ?= flatpak
-BUILDER     ?= flatpak run --user org.flatpak.Builder
-BUILD_DIR   ?= .flatpak-build
-REPO_DIR    ?= .flatpak-repo
-MANIFEST    := flatpak/$(APP_ID).yml
-VERSION     := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-BUNDLE      := dist/$(APP_ID)-$(VERSION).flatpak
-BIN         := target/release/dsh-desktop
+PYTHON ?= python3
 
-# The shell updater gates the update check on an embedded public key
-# (option_env in shell_updater.rs). Single source of truth is the tauri
-# config; without it every build silently disables in-app updates.
-export DSH_DESKTOP_UPDATER_PUBKEY := $(shell jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)
+.PHONY: all prepare build package verify test gui-smoke run
 
-.PHONY: all run dev test vendor vendor-native vendor-anchored gitea-publish build install uninstall flatpak-build flatpak-export flatpak-install flatpak-bundle flatpak-run clean
+all:
+	$(PYTHON) scripts/build.py all
 
-all: test
+prepare:
+	$(PYTHON) scripts/build.py prepare
 
-run:
-	$(CARGO) run -p dsh-desktop -- --no-update
+build: prepare
+	$(PYTHON) scripts/build.py build
 
-dev:
-	$(CARGO) run -p dsh-desktop -- --dev --verbose
+package: build
+	$(PYTHON) scripts/build.py package
 
-build:
-	$(CARGO) build -p dsh-desktop --release
+verify:
+	$(PYTHON) scripts/build.py verify
 
 test:
-	$(CARGO) test -p dsh-core
 	$(PYTHON) -m unittest discover -s tests -v
 	node --test tests/*.test.mjs
 
-vendor:
-	mkdir -p vendor
-	rm -rf $(VENDOR_DIR) $(MODLENS_DIR) $(MARKET_DIR) $(VENDOR_ARCHIVE) $(MODLENS_ARCHIVE) $(MARKET_ARCHIVE) vendor/node-runtime vendor/node-runtime.tar.gz vendor/node-runtime.version
-	npm_config_registry=https://registry.npmmirror.com npm install --prefix=$(CURDIR)/$(VENDOR_DIR) --global --prefer-offline --no-audit --no-fund @deepseek-ai/dsh@$(DSH_VERSION)
-	$(PYTHON) scripts/prune-npm-runtime.py $(VENDOR_DIR)
-	tar -czf $(VENDOR_ARCHIVE) -C $(VENDOR_DIR) .
-	test $$(wc -c < $(VENDOR_ARCHIVE)) -le $(VENDOR_ARCHIVE_MAX_BYTES)
-	NODE_VERSION=$(NODE_VERSION) bash scripts/vendor-node-runtime.sh
-	npm install --prefix=$(CURDIR)/$(MODLENS_DIR) --prefer-offline --no-audit --no-fund @liustack/modlens@$(MODLENS_VERSION)
-	$(PYTHON) scripts/prune-npm-runtime.py $(MODLENS_DIR)
-	tar -czf $(MODLENS_ARCHIVE) -C $(MODLENS_DIR) .
-	npm install --prefix=$(CURDIR)/$(MARKET_DIR) --prefer-offline --no-audit --no-fund dshmarket@$(MARKET_VERSION)
-	$(PYTHON) scripts/patch-dshmarket-mainland.py
-	$(PYTHON) scripts/prune-npm-runtime.py $(MARKET_DIR)
-	tar -czf $(MARKET_ARCHIVE) -C $(MARKET_DIR) .
-	$(MAKE) vendor-anchored
+gui-smoke:
+	xvfb-run -a node scripts/gui-smoke.mjs
 
-vendor-native:
-	DSH_VERSION=$(DSH_VERSION) NODE_VERSION=$(NODE_VERSION) MODLENS_VERSION=$(MODLENS_VERSION) MARKET_VERSION=$(MARKET_VERSION) ANCHORED_COMMIT=$(ANCHORED_COMMIT) ANCHORED_REPO=$(ANCHORED_REPO) bash scripts/vendor-native.sh
-
-vendor-anchored:
-	rm -rf vendor/.anchored-src $(ANCHORED_DIR) $(ZERO_DIR)
-	mkdir -p vendor/.anchored-src
-	git -C vendor/.anchored-src init --initial-branch=main
-	git -C vendor/.anchored-src remote add origin $(ANCHORED_REPO)
-	git -C vendor/.anchored-src fetch --depth 1 origin $(ANCHORED_COMMIT)
-	git -C vendor/.anchored-src checkout --detach FETCH_HEAD
-	mkdir -p $(ANCHORED_DIR) $(ZERO_DIR)
-	cp -R vendor/.anchored-src/preset/. $(ANCHORED_DIR)/
-	cp -R vendor/.anchored-src/zero-anchored-standard/. $(ZERO_DIR)/
-	cp vendor/.anchored-src/LICENSE vendor/.anchored-src/NOTICE $(ANCHORED_DIR)/
-	cp vendor/.anchored-src/LICENSE vendor/.anchored-src/NOTICE $(ZERO_DIR)/
-	printf '%s\n' $(ANCHORED_COMMIT) > $(ANCHORED_DIR)/.dsh-desktop-source
-	printf '%s\n' $(ANCHORED_COMMIT) > $(ZERO_DIR)/.dsh-desktop-source
-	$(PYTHON) scripts/localize_preset.py $(ANCHORED_DIR)/preset.yml
-	$(PYTHON) scripts/localize_preset.py $(ZERO_DIR)/preset.yml zero
-	rm -rf vendor/.anchored-src
-gitea-publish:
-	RELEASE_TAG="$(RELEASE_TAG)" bash scripts/publish-gitea-actions.sh
-
-
-install: build
-	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/dsh-desktop
-	install -Dm644 data/applications/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
-	install -Dm644 data/metainfo/$(APP_ID).metainfo.xml $(DESTDIR)$(PREFIX)/share/metainfo/$(APP_ID).metainfo.xml
-	for size in 16 24 32 48 64 128 256 512; do \
-		install -Dm644 "data/icons/hicolor/$${size}x$${size}/apps/$(APP_ID).png" "$(DESTDIR)$(PREFIX)/share/icons/hicolor/$${size}x$${size}/apps/$(APP_ID).png"; \
-	done
-	if [ -z "$(DESTDIR)" ]; then \
-		update-desktop-database "$(PREFIX)/share/applications" >/dev/null 2>&1 || true; \
-	fi
-	if [ -d $(MODLENS_DIR)/node_modules/@liustack/modlens ]; then \
-		rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop/modlens; \
-		mkdir -p $(DESTDIR)$(PREFIX)/share/dsh-desktop; \
-		cp -R $(MODLENS_DIR) $(DESTDIR)$(PREFIX)/share/dsh-desktop/modlens; \
-	fi
-	if [ -d $(MARKET_DIR)/node_modules/dshmarket ]; then \
-		rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop/market; \
-		mkdir -p $(DESTDIR)$(PREFIX)/share/dsh-desktop; \
-		cp -R $(MARKET_DIR) $(DESTDIR)$(PREFIX)/share/dsh-desktop/market; \
-	fi
-	if [ -f plugins/dsh-desktop-voice/package.json ]; then \
-		rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop/voice; \
-		mkdir -p $(DESTDIR)$(PREFIX)/share/dsh-desktop; \
-		cp -R plugins/dsh-desktop-voice $(DESTDIR)$(PREFIX)/share/dsh-desktop/voice; \
-	fi
-	if [ -f $(ANCHORED_DIR)/preset.yml ]; then \
-		rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop/anchored-standard; \
-		mkdir -p $(DESTDIR)$(PREFIX)/share/dsh-desktop; \
-		cp -R $(ANCHORED_DIR) $(DESTDIR)$(PREFIX)/share/dsh-desktop/anchored-standard; \
-	fi
-	if [ -f $(ZERO_DIR)/preset.yml ]; then \
-		rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop/zero-anchored-standard; \
-		mkdir -p $(DESTDIR)$(PREFIX)/share/dsh-desktop; \
-		cp -R $(ZERO_DIR) $(DESTDIR)$(PREFIX)/share/dsh-desktop/zero-anchored-standard; \
-	fi
-	@echo "installed to $(PREFIX) — make sure $(PREFIX)/bin is on PATH"
-
-uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/dsh-desktop
-	rm -rf $(DESTDIR)$(PREFIX)/share/dsh-desktop
-	rm -f $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
-	rm -f $(DESTDIR)$(PREFIX)/share/metainfo/$(APP_ID).metainfo.xml
-	for size in 16 24 32 48 64 128 256 512; do \
-		rm -f "$(DESTDIR)$(PREFIX)/share/icons/hicolor/$${size}x$${size}/apps/$(APP_ID).png"; \
-	done
-
-flatpak-build: $(VENDOR_DIR)/bin/dsh $(MODLENS_DIR)/node_modules/@liustack/modlens $(MARKET_DIR)/node_modules/dshmarket $(ANCHORED_DIR)/preset.yml $(ZERO_DIR)/preset.yml
-	$(BUILDER) --user --force-clean --install-deps-from=flathub $(BUILD_DIR) $(MANIFEST)
-
-$(VENDOR_DIR)/bin/dsh:
-	$(MAKE) vendor
-
-$(MODLENS_DIR)/node_modules/@liustack/modlens:
-	$(MAKE) vendor
-
-
-$(MARKET_DIR)/node_modules/dshmarket:
-	$(MAKE) vendor
-$(ANCHORED_DIR)/preset.yml $(ZERO_DIR)/preset.yml:
-	$(MAKE) vendor-anchored
-
-flatpak-export:
-	$(FLATPAK) build-export $(REPO_DIR) $(BUILD_DIR) master
-
-flatpak-install: flatpak-build flatpak-export
-	$(FLATPAK) --user install -y "$(CURDIR)/$(REPO_DIR)" $(APP_ID)
-
-flatpak-bundle: flatpak-build flatpak-export
-	mkdir -p dist
-	$(FLATPAK) build-bundle $(REPO_DIR) "$(BUNDLE)" $(APP_ID) master
-
-flatpak-run:
-	$(FLATPAK) run $(APP_ID)
-
-clean:
-	$(CARGO) clean
-	rm -rf $(BUILD_DIR) $(REPO_DIR) build dist
-	find . -name __pycache__ -type d -prune -exec rm -rf {} +
+run:
+	$(PYTHON) scripts/build.py launch

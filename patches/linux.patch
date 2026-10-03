@@ -1,0 +1,343 @@
+diff --git a/apps/desktop/scripts/desktop-build-paths.d.mts b/apps/desktop/scripts/desktop-build-paths.d.mts
+index 9a8e408..27f8a73 100644
+--- a/apps/desktop/scripts/desktop-build-paths.d.mts
++++ b/apps/desktop/scripts/desktop-build-paths.d.mts
+@@ -1,5 +1,8 @@
+ import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+ 
++/** A release or downstream Linux desktop build target. */
++export type DesktopBuildTarget = DesktopAutoUpdateTarget | 'linux-x64'
++
+ /** Mutable target directories plus the shared immutable download cache. */
+ export interface DesktopTargetBuildPaths {
+   readonly root: string
+@@ -27,14 +30,14 @@ export function resolveDesktopBuildTarget(
+   env?: NodeJS.ProcessEnv,
+   hostPlatform?: NodeJS.Platform,
+   hostArch?: string,
+-): DesktopAutoUpdateTarget
++): DesktopBuildTarget
+ 
+ /**
+  * Return the mutable preparation and artifact directories owned by one release target.
+  * @param target - Supported Desktop target name.
+  * @returns Target paths plus the shared immutable download cache.
+  */
+-export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): DesktopTargetBuildPaths
++export function desktopTargetBuildPaths(target: DesktopBuildTarget): DesktopTargetBuildPaths
+ 
+ /**
+  * Return the platform and architecture of the payload one release target prepares.
+@@ -42,8 +45,8 @@ export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): Deskto
+  * @param target - Supported Desktop target name.
+  * @returns Platform and architecture of the prepared payload.
+  */
+-export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): {
+-  readonly platform: 'darwin' | 'win32'
++export function desktopTargetPlatform(target: DesktopBuildTarget): {
++  readonly platform: 'darwin' | 'win32' | 'linux'
+   readonly arch: 'arm64' | 'x64'
+ }
+ 
+diff --git a/apps/desktop/scripts/desktop-build-paths.mjs b/apps/desktop/scripts/desktop-build-paths.mjs
+index 4f33e80..d44bf0f 100644
+--- a/apps/desktop/scripts/desktop-build-paths.mjs
++++ b/apps/desktop/scripts/desktop-build-paths.mjs
+@@ -4,14 +4,14 @@ import { join, resolve } from 'node:path'
+ 
+ const APP_ROOT = resolve(import.meta.dirname, '..')
+ const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
+-const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64'])
++const SUPPORTED_TARGETS = new Set(['mac-arm64', 'mac-x64', 'win-x64', 'linux-x64'])
+ 
+ /**
+  * Resolve the fixed build target selected by a packaging environment.
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+  * @param {NodeJS.Platform} hostPlatform - Build-host platform used when no target override exists.
+  * @param {string} hostArch - Build-host architecture used when no target override exists.
+- * @returns {'mac-arm64' | 'mac-x64' | 'win-x64'} Supported Desktop target name.
++ * @returns {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} Supported Desktop target name.
+  */
+ export function resolveDesktopBuildTarget(
+   env = process.env,
+@@ -26,7 +26,7 @@ export function resolveDesktopBuildTarget(
+   if (!SUPPORTED_TARGETS.has(target)) {
+     throw new Error(`desktop build paths: unsupported target ${target}`)
+   }
+-  return /** @type {'mac-arm64' | 'mac-x64' | 'win-x64'} */ (target)
++  return /** @type {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} */ (target)
+ }
+ 
+ function assertSupportedTarget(target) {
+@@ -37,7 +37,7 @@ function assertSupportedTarget(target) {
+ 
+ /**
+  * Return the mutable preparation and artifact directories owned by one release target.
+- * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
++ * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} target - Supported Desktop target name.
+  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
+  */
+ export function desktopTargetBuildPaths(target) {
+@@ -63,13 +63,13 @@ export function desktopTargetBuildPaths(target) {
+ /**
+  * Return the platform and architecture of the payload one release target prepares.
+  * Windows is prepared as x64 only, so this differs from the build host on an arm64 Windows machine.
+- * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
+- * @returns {{ platform: 'darwin' | 'win32', arch: 'arm64' | 'x64' }} Platform and architecture of the prepared payload.
++ * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} target - Supported Desktop target name.
++ * @returns {{ platform: 'darwin' | 'win32' | 'linux', arch: 'arm64' | 'x64' }} Platform and architecture of the prepared payload.
+  */
+ export function desktopTargetPlatform(target) {
+   assertSupportedTarget(target)
+   return {
+-    platform: /** @type {'darwin' | 'win32'} */ (target === 'win-x64' ? 'win32' : 'darwin'),
++    platform: /** @type {'darwin' | 'win32' | 'linux'} */ (target === 'win-x64' ? 'win32' : target === 'linux-x64' ? 'linux' : 'darwin'),
+     arch: /** @type {'arm64' | 'x64'} */ (target === 'mac-arm64' ? 'arm64' : 'x64'),
+   }
+ }
+diff --git a/apps/desktop/scripts/development-project.ts b/apps/desktop/scripts/development-project.ts
+index d544ce6..9a6b2a5 100644
+--- a/apps/desktop/scripts/development-project.ts
++++ b/apps/desktop/scripts/development-project.ts
+@@ -16,8 +16,7 @@ import { dirname, join } from 'node:path'
+ import { createDevelopmentProjectMetadata } from '../src/project-manager.ts'
+ import type { DesktopRelease } from '../src/release.ts'
+ import { DESKTOP_RUNTIME_FILE, type DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+-import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+-import { desktopTargetPlatform } from './desktop-build-paths.mjs'
++import { desktopTargetPlatform, type DesktopBuildTarget } from './desktop-build-paths.mjs'
+ 
+ interface PackageManifest {
+   readonly name?: string
+@@ -38,7 +37,7 @@ export interface DevelopmentProjectOptions {
+   /** Release identity written into the disposable project metadata. */
+   readonly release: DesktopRelease
+   /** Build target whose prepared payload the disposable project runs against. */
+-  readonly target: DesktopAutoUpdateTarget
++  readonly target: DesktopBuildTarget
+ }
+ 
+ function readManifest(path: string): PackageManifest {
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index 1fb7878..f7a076a 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -51,7 +51,8 @@ export function createElectronBuilderConfig(
+   preparedRuntimeVersion = undefined,
+ ) {
+   const appId = resolveDesktopAppId(env)
+-  const policy = resolveDesktopPolicyEnvironment(env)
++  const policy = (env.DSH_DESKTOP_TARGET_PLATFORM ?? hostPlatform) === 'linux'
++    ? undefined : resolveDesktopPolicyEnvironment(env)
+   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
+   const resolvedPlatform = targetPlatform ?? hostPlatform
+   const resolvedArch = env.DSH_DESKTOP_TARGET_ARCH ?? hostArch
+@@ -90,7 +91,8 @@ export function createElectronBuilderConfig(
+   if (windowsSigner !== undefined) {
+     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
+   }
+-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
++  const update = unsigned || resolvedPlatform === 'linux'
++    ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
+   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
+   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
+diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
+index 442e017..6cb7cfc 100644
+--- a/apps/desktop/scripts/prepare-dsh.ts
++++ b/apps/desktop/scripts/prepare-dsh.ts
+@@ -41,7 +41,7 @@ const STORE_ROOT = join(BUILD_ROOT, 'store')
+ const RUNTIME_ROOT = BUILD_PATHS.runtime
+ const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
+ const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
+-const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
++const NODE = join(BUILD_PATHS.electron, process.platform === 'win32' ? 'electron.exe' : process.platform === 'linux' ? 'electron' : 'Electron.app/Contents/MacOS/Electron')
+ const PNPM = join(RUNTIME_ROOT, 'pnpm', 'bin', 'pnpm.mjs')
+ 
+ function manifestVersion(path: string, subject: string): string {
+diff --git a/apps/desktop/scripts/prepare-runtime.ts b/apps/desktop/scripts/prepare-runtime.ts
+index 1b88f09..1b5c501 100644
+--- a/apps/desktop/scripts/prepare-runtime.ts
++++ b/apps/desktop/scripts/prepare-runtime.ts
+@@ -31,7 +31,7 @@ function preparePnpm(): string {
+ async function main(): Promise<void> {
+   const { values } = parseArgs({ options: { 'defer-primary-runtime-smoke': { type: 'boolean', default: false } } })
+   const target = resolveDesktopBuildTarget()
+-  const platform = target.startsWith('mac-') ? 'darwin' : 'win32'
++  const platform = target.startsWith('mac-') ? 'darwin' : target.startsWith('linux-') ? 'linux' : 'win32'
+   const arch = target.endsWith('arm64') ? 'arm64' : 'x64'
+   const require = createRequire(import.meta.url)
+   const { version } = require('electron/package.json') as { version: string }
+@@ -39,7 +39,7 @@ async function main(): Promise<void> {
+     () => downloadArtifact({ version, platform, arch, artifactName: 'electron', cacheRoot: BUILD_PATHS.downloads }))
+   rmSync(BUILD_PATHS.electron, { recursive: true, force: true })
+   await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'extract:electron', () => extractZip(archive, { dir: BUILD_PATHS.electron }))
+-  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : 'Electron.app/Contents/MacOS/Electron')
++  const executable = join(BUILD_PATHS.electron, platform === 'win32' ? 'electron.exe' : platform === 'linux' ? 'electron' : 'Electron.app/Contents/MacOS/Electron')
+   const nodeVersion = execFileSync(executable, ['-p', 'process.versions.node'], {
+     encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+   }).trim()
+@@ -55,8 +55,11 @@ async function main(): Promise<void> {
+     node: nodeVersion,
+     pnpm: pnpmVersion,
+   }, undefined, 2)}\n`)
+-  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:cli',
+-    async () => prepareDesktopCli(join(RUNTIME_ROOT, 'cli'), platform))
++  if (platform !== 'linux') {
++    await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:cli',
++      async () => prepareDesktopCli(join(RUNTIME_ROOT, 'cli'), platform))
++  }
++  mkdirSync(join(RUNTIME_ROOT, 'cli'), { recursive: true })
+   if (macosMinimumVersion !== undefined) prepareCommandLink(join(RUNTIME_ROOT, 'cli'), arch, macosMinimumVersion)
+   cpSync(join(import.meta.dirname, '..', 'lib', 'command-manager-entry.js'), join(RUNTIME_ROOT, 'cli', 'command-manager.js'))
+   cpSync(join(import.meta.dirname, 'command-path.ps1'), join(RUNTIME_ROOT, 'cli', 'command-path.ps1'))
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index 5d9d460..bec0ff5 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -31,17 +31,17 @@ export const en = {
+   application: 'Application',
+   fileMenu: 'File',
+   closePage: 'Close Page or Window',
+-  aboutMenu: 'About DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: 'About dsh-workbench',
++  aboutProduct: 'dsh-workbench',
+   aboutVersion: 'Version V{version}',
+-  hideApplication: 'Hide DeepSeek Harness',
++  hideApplication: 'Hide dsh-workbench',
+   hideOtherApplications: 'Hide Others',
+   showAllApplications: 'Show All',
+-  quitApplication: 'Quit DeepSeek Harness',
+-  openApplication: 'Open DeepSeek Harness',
++  quitApplication: 'Quit dsh-workbench',
++  openApplication: 'Open dsh-workbench',
+   quit: 'Quit',
+   cancel: 'Cancel',
+-  quitTitle: 'Quit DeepSeek Harness?',
++  quitTitle: 'Quit dsh-workbench?',
+   quitActiveTasks: 'Running tasks will be interrupted.',
+   quitScheduledTasks: 'Scheduled tasks will not run while the app is closed.',
+   quitActiveAndScheduledTasks: 'Running tasks will be interrupted, and scheduled tasks will not run while the app is closed.',
+@@ -56,7 +56,7 @@ export const en = {
+   copy: 'Copy',
+   paste: 'Paste',
+   selectAll: 'Select All',
+-  startupFailed: 'DeepSeek Harness is unavailable',
++  startupFailed: 'dsh-workbench is unavailable',
+   fatalSummary: 'The application could not start or stopped unexpectedly.',
+   startupAddressInUse: 'Another DSH instance (such as dsh web or the desktop app) is running. They cannot start at the same time. Quit the other running DSH instance, then restart.',
+   diagnosticTruncated: '… Error details shortened.',
+@@ -66,10 +66,10 @@ export const en = {
+   restartApplication: 'Restart',
+   recoveryOperationFailed: 'The recovery operation failed',
+   disableThirdPartyPlugins: 'Disable third-party plugins, back up profile patch, and restart',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: 'dsh-workbench',
++  welcomeBrand: 'dsh-workbench',
+   welcomeTaglineBefore: 'Welcome to ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: 'dsh-workbench',
+   welcomeTaglineAfter: '',
+   welcomeDescription: 'Build potential. Explore intelligence.',
+   welcomeAuthStarting: 'Opening sign in…',
+@@ -130,7 +130,7 @@ export const en = {
+   updateTasksUnavailable: 'Task status is unavailable. Try updating again when the workspace is ready.',
+   updateStopFailed: 'Could not safely stop the tasks. The update has not been installed. Please try again later.',
+   updateTechnicalDetails: 'View technical details',
+-  updateTitle: 'DeepSeek Harness Update',
++  updateTitle: 'dsh-workbench Update',
+   updateAvailable: 'New version available: {version}',
+   updateDetail: 'Once the download is complete, you can install the update and restart the app.',
+   installAndRestart: 'Install and Restart',
+@@ -202,17 +202,17 @@ export const zh = {
+   application: '应用',
+   fileMenu: '文件',
+   closePage: '关闭页面或窗口',
+-  aboutMenu: '关于 DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: '关于 dsh-workbench',
++  aboutProduct: 'dsh-workbench',
+   aboutVersion: '版本 V{version}',
+-  hideApplication: '隐藏 DeepSeek Harness',
++  hideApplication: '隐藏 dsh-workbench',
+   hideOtherApplications: '隐藏其他',
+   showAllApplications: '显示全部',
+-  quitApplication: '退出 DeepSeek Harness',
+-  openApplication: '打开 DeepSeek Harness',
++  quitApplication: '退出 dsh-workbench',
++  openApplication: '打开 dsh-workbench',
+   quit: '退出',
+   cancel: '取消',
+-  quitTitle: '退出 DeepSeek Harness？',
++  quitTitle: '退出 dsh-workbench？',
+   quitActiveTasks: '当前正在运行的任务将会中断',
+   quitScheduledTasks: '应用关闭期间，定时任务不会运行',
+   quitActiveAndScheduledTasks: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
+@@ -227,7 +227,7 @@ export const zh = {
+   copy: '复制',
+   paste: '粘贴',
+   selectAll: '全选',
+-  startupFailed: 'DeepSeek Harness 无法使用',
++  startupFailed: 'dsh-workbench 无法使用',
+   fatalSummary: '应用无法启动或已意外停止。',
+   startupAddressInUse: '有其他正在运行的 DSH（如其他 dsh web、桌面端），无法同时启动，请退出其他正在运行的 DSH 后重启。',
+   diagnosticTruncated: '… 错误详情已截短。',
+@@ -237,10 +237,10 @@ export const zh = {
+   restartApplication: '重启',
+   recoveryOperationFailed: '恢复操作失败',
+   disableThirdPartyPlugins: '禁用第三方插件、备份 profile patch 并重启',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: 'dsh-workbench',
++  welcomeBrand: 'dsh-workbench',
+   welcomeTaglineBefore: '欢迎使用 ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: 'dsh-workbench',
+   welcomeTaglineAfter: '',
+   welcomeDescription: '组装无限可能，共探智能上限',
+   welcomeAuthStarting: '正在打开登录…',
+@@ -301,7 +301,7 @@ export const zh = {
+   updateTasksUnavailable: '无法确认任务状态，请在工作区就绪后重试更新。',
+   updateStopFailed: '未能安全停止任务，更新尚未安装，请稍后重试。',
+   updateTechnicalDetails: '查看技术详情',
+-  updateTitle: 'DeepSeek Harness 更新',
++  updateTitle: 'dsh-workbench 更新',
+   updateAvailable: '发现新版本 {version}',
+   updateDetail: '下载完成后，可安装并重启应用。',
+   installAndRestart: '安装并重启',
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index b4b8153..6eee9a6 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -925,7 +925,7 @@ async function main(): Promise<void> {
+   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
+     : join(process.resourcesPath, 'icon.png')
+   app.setAboutPanelOptions({
+-    applicationName: 'DeepSeek Harness',
++    applicationName: 'dsh-workbench',
+     applicationVersion: app.getVersion(),
+     // The release has no separate build number; omit Electron's bundle version.
+     version: '',
+@@ -952,7 +952,8 @@ async function main(): Promise<void> {
+         click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
+       : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
+     { type: 'separator' },
+-    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
++    ...process.platform === 'linux' ? []
++      : [{ label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } }],
+     ...process.platform === 'darwin' || process.platform === 'win32'
+       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+     ...development ? [
+@@ -1225,7 +1226,9 @@ async function main(): Promise<void> {
+     window.focus()
+   }
+ 
+-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
++  if (process.platform !== 'linux' && (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1')) {
++    app.setAsDefaultProtocolClient('dsh')
++  }
+   app.on('open-url', (event, url) => {
+     event.preventDefault()
+     if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()

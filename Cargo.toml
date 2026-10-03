@@ -1,9 +1,0 @@
-[workspace]
-members = ["crates/dsh-core", "src-tauri"]
-resolver = "2"
-
-[workspace.package]
-version = "0.1.7"
-edition = "2021"
-license = "MIT"
-authors = ["TommyFang2077"]

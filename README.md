@@ -1,209 +1,61 @@
-<p align="center">
-  <img src="docs/screenshots/banner.png" alt="DeepSeek Harness Desktop：内置离线语音、插件市场与视觉模型配置" />
-</p>
+# dsh-workbench
 
-<h1 align="center">DeepSeek Harness Desktop</h1>
+基于官方 [DeepSeek Harness Desktop](https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/desktop) 的 **非官方 Linux 桌面构建**，提供 x86_64 的 `.deb` 和 `.rpm`。直接复用官方 Electron 主进程、界面、插件管理和 Host，不另写桌面壳。
 
-<p align="center">
-  <strong>官方 <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>（dsh）的原生桌面壳</strong>
-</p>
+官方源码版本和提交固定在 [`upstream.json`](upstream.json)。当前为 `0.2.1-alpha.1` 开发预览版，可能存在破坏性变化。安装前阅读上游 [安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)。
 
-<p align="center">
-  <strong>离线语音输入</strong>&nbsp;&nbsp;·&nbsp;&nbsp;<strong>内置插件市场</strong>&nbsp;&nbsp;·&nbsp;&nbsp;<strong>可视化配置视觉模型</strong>
-</p>
+## 构建
 
-<p align="center">
-  <a href="https://github.com/TommyFang2077/dsh-easy-desktop/releases/latest"><b>下载</b></a> ·
-  <a href="https://git.fangsiyuan.top/TomHanck4/dsh-easy-desktop/releases/latest"><b>大陆镜像</b></a> ·
-  <a href="#核心体验">核心体验</a> ·
-  <a href="#三十秒上手">三十秒上手</a> ·
-  <a href="#从源码运行">从源码运行</a>
-</p>
+需要 Linux x86_64、Node.js 22.19+ 或 24+（Node 23 不在支持范围内）、npm、Git、Python 3.11+、C/C++ 编译器、make、tar、`dpkg-deb`、`rpm` 和 `rpmbuild`。构建与测试不需要 root。
 
-<p align="center">
-  <a href="https://github.com/TommyFang2077/dsh-easy-desktop/actions/workflows/ci.yml"><img src="https://github.com/TommyFang2077/dsh-easy-desktop/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/TommyFang2077/dsh-easy-desktop/actions/workflows/release.yml"><img src="https://github.com/TommyFang2077/dsh-easy-desktop/actions/workflows/release.yml/badge.svg" alt="Release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT" /></a>
-  <a href="https://github.com/TommyFang2077/dsh-easy-desktop/releases/latest"><img src="https://img.shields.io/github/v/release/TommyFang2077/dsh-easy-desktop" alt="release" /></a>
-  <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/topic-dsh--plugin-1f6feb" alt="dsh-plugin" /></a>
-</p>
+Ubuntu/Debian 可安装构建工具及 Electron 系统库：
 
-dsh 原本运行在浏览器标签页中；本项目用 Tauri 2 和系统 WebView 把官方 WebUI 变成原生桌面窗口。会话、工作区、插件和技能全部保留，`dsh` 更新后界面也会随之更新，不需要重新打包前端。
-
-这是作者维护的第三方壳，**不包含** DeepSeek Harness 源码。重点补齐官方 WebUI 在桌面端缺少的输入和扩展体验：直接说话、直接安装插件、直接配置视觉模型。
-
-## 核心体验
-
-### 内置语音：SenseVoice 本机离线听写
-
-对话框旁直接提供麦克风按钮；按 `Ctrl+E`（macOS 为 `⌘E`）即可开始或结束听写，也可切换为按住说话。默认引擎是本机离线 **SenseVoiceSmall**，支持中文、粤语、英语、日语和韩语，识别结果直接写入当前输入框。
-
-模型和 sherpa-onnx WASM 运行时**不塞进安装包**。首次点击麦克风时会明确提示下载约 245 MB，底部状态条持续显示下载与校验进度；安装完成后保存在系统缓存目录，录音不离开本机。需要云端识别时，也可切换到 OpenAI 兼容的 `/v1/audio/transcriptions` 接口。
-
-![设置 → 语音输入：SenseVoice 本机离线听写](docs/screenshots/voice.webp)
-
-### 内置插件市场：发现、安装和更新社区插件
-
-无需记包名或离开应用。在 **设置 → Plugin Market** 中可以浏览目录、搜索分类、查看已安装插件，并直接安装、更新、备份或恢复社区插件。ModLens 等默认组件也能从这里正常更新；桌面启动不会再把用户更新的版本降回内置基线。
-
-![设置 → Plugin Market：浏览并安装社区插件](docs/screenshots/market.webp)
-
-### 视觉模型配置：给 DeepSeek 带上眼睛
-
-纯文本 DeepSeek 配合视觉桥后，可以直接粘贴截图识别内容。引擎配置在 **设置 → 插件 → 插件配置 → 视觉引擎（ModLens）**：支持 OpenAI 兼容接口、Gemini API、Anthropic API、Antigravity CLI 和 Claude Code 登录，只展示当前引擎需要的字段，密钥保存在本机 `~/.modlens/config.json` 中，相关外链由系统浏览器打开。
-
-![设置 → 插件 → 插件配置：视觉引擎（ModLens）](docs/screenshots/vision.webp)
-
-### 锚定模式与原生窗口
-
-内置的锚定式标准预设首轮使用 Minimal 工具表固定执行轨迹，从第二轮起恢复完整 Standard 工具目录。Project2 / DeepSeek V4 Pro 同配置 Ability 为 **98 / 99**，相对官方 Standard 的 91 约 **+8% / +9%**。这是社区实验预设，不代表所有任务都会提升。
-
-36px 薄标题栏保留更多对话空间；左侧 `•••` 菜单可重新启动 dsh 或在浏览器中打开。关闭窗口会停止对应的 `dsh web` 进程，凭据、权限和会话仍保存在 `~/.dsh`。
-
-![主窗口：官方 WebUI 嵌在原生壳中](docs/screenshots/session.png)
-
-## 三十秒上手
-
-从 [GitHub Releases](https://github.com/TommyFang2077/dsh-easy-desktop/releases/latest) 下载对应平台的安装包；中国大陆网络可改用 [Gitea 发行版镜像](https://git.fangsiyuan.top/TomHanck4/dsh-easy-desktop/releases/latest)。壳会在启动时从该镜像检查自身更新，下载完成后先校验 Tauri 签名再安装；超过镜像网关限制的 Linux AppImage 仍使用 GitHub 下载地址。
-
-| 平台 | 产物 | 运行时要求 |
-| --- | --- | --- |
-| Windows | NSIS `.exe` / `.msi` | [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)（安装器可引导下载） |
-| macOS | Apple Silicon / Intel `.dmg` | 未公证，首次打开需在「隐私与安全性」允许 |
-| Linux | `.deb` / `.rpm` | WebKitGTK 4.1 |
-| Linux Flatpak | `.flatpak` | **零依赖**：自带 Node.js 24 与官方 `dsh` |
-
-所有原生安装包都自带匹配平台的官方 Node.js 24、npm 和 `dsh` 内核，首次启动无需下载 Node.js 或 npm。壳会在启动时把更新资源部署到可写数据目录；检测到 npm 时每天检查并把新版官方内核安装到该目录。也可以设置 `DSH_DESKTOP_DSH_BIN` 指定其他 `dsh` 可执行文件。
-
-Windows 启动失败时，启动页会显示最后的服务输出；同时壳会在系统数据目录下保留 `dsh-desktop/logs/dsh-desktop.log` 和 `dsh-desktop/diagnostics/startup.jsonl`。后者只记录 Node.js、dsh 与捆绑件的部署、启动和退出阶段；若上次进程未正常退出，下次启动会记录 `previous-run-interrupted`。提交 issue 前请先检查日志内容。
-
-## 功能一览
-
-| 能力 | 说明 |
-| --- | --- |
-| 离线语音 | 对话框麦克风、`Ctrl+E` / `⌘E` 快捷键、SenseVoice 模型按需下载、本机识别 |
-| 插件市场 | 在设置内浏览、搜索、安装、更新、备份和恢复社区插件 |
-| 视觉模型 | 粘贴图片直接识别；用表单配置五类视觉引擎，不必手改 JSON |
-| 官方 WebUI | 会话、工作区、插件和技能原样保留；dsh 更新后界面同步更新 |
-| 锚定预设 | Project2 / DeepSeek V4 Pro 相对官方 Standard 约 +8% |
-| 原生生命周期 | 随机本地端口启动 `dsh web`；关闭窗口停止服务；崩溃可一键重启 |
-
-## 内置能力与数据位置
-
-| 组件 | 当前基线 | 用途 | 本地位置 |
-| --- | --- | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` | 所有安装包内置官方 WebUI；检测到 npm 时在线更新 | `~/.local/share/dsh-desktop/dsh-prefix`（平台对应数据目录） |
-| Node.js runtime | `24.19.0` | 原生安装包内置 Node.js/npm，供官方 dsh 启动和更新使用 | `~/.local/share/dsh-desktop/node-runtime`（平台对应数据目录） |
-| 离线语音 | `dsh-desktop-voice 0.4.0` | 麦克风、快捷键、SenseVoice / OpenAI 兼容听写 | 配置 `~/.config/dsh-desktop/voice.json`；模型在系统缓存目录 |
-| 插件市场 | `dshmarket 1.11.3` | 社区插件的发现、安装和更新 | `~/.dsh/profiles/web` |
-| 视觉桥 | `ModLens 3.16.6` | 让纯文本模型读取粘贴的图片；可从市场更新；引擎配置在「设置 → 插件」 | `~/.dsh/profiles/web`；配置 `~/.modlens/config.json` |
-| 锚定预设 | `ffb845c5480a` | 锚定式标准与零工具锚定式标准 | `~/.dsh/.agent-presets/` |
-
-应用启动时会同步桌面自带组件，但会保留用户从市场更新到更新版本的 ModLens 和市场。捆绑版本固定在 [Makefile](Makefile) 中。
-
-`dsh` 的查找顺序：`DSH_DESKTOP_DSH_BIN` → `--dsh` → 桌面更新目录（首次从安装包复制） → Flatpak 内置路径 → 宿主机常见路径 → `PATH` → `npx`。原生安装包启动的 dsh、市场和语音运行时优先使用内置 Node.js/npm；npm 包默认通过 `https://registry.npmmirror.com` 获取，已有 `npm_config_registry` / `NPM_CONFIG_REGISTRY` 会保留，也可用 `DSH_DESKTOP_NPM_REGISTRY` 显式覆盖。设置 `DSH_DESKTOP_NO_UPDATE=1` 或传入 `--no-update` 可关闭 dsh 在线更新，但不会禁用安装包内的内核。
-
-## 安全与边界
-
-- WebUI 只监听随机的 `127.0.0.1` 端口。
-- 语音模型按需下载；SenseVoice 识别在本机执行。
-- API 密钥只写入本机配置，不进入仓库或远端服务。
-- 卸载桌面壳不会删除 `~/.dsh` 中的会话、权限和工作区设置。
-
-## 从源码运行
-
-开发依赖：Rust stable、系统 WebView。
-
-- Linux：GTK 3 + WebKitGTK 4.1（Fedora：`gtk3-devel webkit2gtk4.1-devel`；Debian/Ubuntu：`libgtk-3-dev libwebkit2gtk-4.1-dev`）
-- macOS：WKWebView（Xcode Command Line Tools）
-- Windows：WebView2
-
-```bash
-git clone https://github.com/TommyFang2077/dsh-easy-desktop.git
-cd dsh-easy-desktop
-make vendor-native          # 官方 dsh + ModLens + 市场 + 锚定预设（Tauri 打包资源）
-make run                    # 普通模式（跳过更新，便于开发）
-make dev                    # 开 WebView 检查器和调试日志
-cargo run -p dsh-desktop -- --cwd ~/your-project
+```sh
+sudo apt install build-essential git python3 rpm dpkg-dev libgtk-3-0 libnss3 libxss1 libxtst6 libgbm1 libasound2 libatspi2.0-0 xdg-utils
 ```
 
-```bash
+Ubuntu 24.04 中 GTK、ALSA、AT-SPI 的对应包名为 `libgtk-3-0t64`、`libasound2t64`、`libatspi2.0-0t64`。Fedora 可使用 `gcc-c++ make git python3 rpm-build dpkg gtk3 nss libXScrnSaver libXtst mesa-libgbm alsa-lib at-spi2-core xdg-utils`。
+
+```sh
+make prepare
 make test
+make package
 ```
 
-`make install` 把二进制装到 `~/.local/bin/dsh-desktop`，应用菜单里会出现 **DeepSeek Harness**。
+首次构建会下载固定官方源码、pnpm、npm 依赖、Electron，以及官方锁定的 Node/Python/Office 运行时。需要联网和数 GB 的可用空间；源码、依赖和中间产物放在忽略的 `build/` 中。
 
-本地打原生包（先 `make vendor-native`）：
+也可分阶段执行：
 
-```bash
-cargo tauri build --bundles deb,rpm      # Linux
-cargo tauri build --bundles nsis,msi     # Windows
-cargo tauri build --bundles app,dmg      # macOS
+```sh
+make prepare                     # 下载源码、应用 Linux 补丁、安装锁定依赖
+make build                       # 编译官方桌面端和 WebUI
+python3 scripts/build.py package # 使用已有构建准备运行时并打包，不重新编译
+python3 scripts/build.py bundle  # 使用已准备的运行时重新生成安装包
+make verify                      # 核对两个安装包的身份、文件清单，生成 SHA256SUMS
+make run                         # 将 deb 临时解包到 /tmp 并运行，不安装到系统
+make gui-smoke                   # 可选：需要 Xvfb，使用隔离数据验证欢迎页 → 工作区
 ```
 
-发布：推送 `v*` 标签（如 `git tag v0.1.5 && git push origin v0.1.5`）。[Release 工作流](.github/workflows/release.yml)自动测试、打包 Windows / macOS / deb / rpm / Flatpak，发布 GitHub Release，并发布相同安装包和更新 feed 到 Gitea。Gitea pull mirror 收到标签后也会自动等待 GitHub 安装包完成、创建对应的 Gitea Release；必要时可在 Gitea Actions 手动运行，或在具备 `GITEA_TOKEN` 的环境执行 `make gitea-publish RELEASE_TAG=v0.1.5`。
+产物位于 `dist/`：`dsh-workbench-<version>-x64.deb`、`dsh-workbench-<version>-x64.rpm`、`SHA256SUMS` 和 `build-info.json`。打包始终在 Linux `/tmp` 下的私有目录暂存，校验完成后仅复制安装包到 `dist/`；因此源码目录位于 NTFS/exFAT 时，也不会将 `777` 权限写入安装包。打包命令会运行官方运行时检查与隔离数据目录的 Host 启动检查，拒绝非符号链接文件的组/其他用户可写权限，失败则停止，不将构建报告为验证通过。
 
-## Flatpak
+## 安装
 
-Flatpak 额外内置 Node.js 24，因此不依赖宿主机 Node.js。
-
-```bash
-flatpak remote-add --user --if-not-exists flathub \
-  https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak install --user -y flathub org.gnome.Sdk//50 org.flatpak.Builder \
-  org.freedesktop.Sdk.Extension.rust-stable//25.08 \
-  org.freedesktop.Sdk.Extension.node24//25.08
-
-make vendor
-make flatpak-build
-make flatpak-install
-make flatpak-run
-make flatpak-bundle
+```sh
+sudo apt install ./dist/dsh-workbench-0.2.1-alpha.1-x64.deb
+# 或在 Fedora/RHEL 系使用：
+sudo dnf install ./dist/dsh-workbench-0.2.1-alpha.1-x64.rpm
 ```
 
-清单：[flatpak/io.github.tommyfang.DshDesktop.yml](flatpak/io.github.tommyfang.DshDesktop.yml)。权限：网络、宿主文件系统、Wayland/X11、下载目录。
+应用菜单名称和命令为 `dsh-workbench`，应用安装在 `/opt/dsh-workbench`。无需另装 Node、pnpm 或 Python；仍需发行版提供的 Electron 图形系统库。桌面程序不以 root 运行，不使用 `--no-sandbox`。
 
-## 项目结构
+## Linux 适配范围
 
-```text
-dsh-desktop/
-├── ui/                         # 启动页 + 注入到 WebUI 的标题栏
-├── src-tauri/                  # Tauri 窗口、命令、deb/rpm/nsis/dmg
-├── crates/dsh-core/            # 启动 / 更新 / ModLens / 预设 / 剪贴板
-├── plugins/dsh-desktop-voice/  # 设置 → 语音输入 + 对话框麦克风
-├── data/                       # .desktop、图标、AppStream
-├── flatpak/
-├── docs/screenshots/           # README 截图
-├── docs/licenses/              # 第三方许可证副本
-├── vendor/                     # make vendor 生成（git 忽略）
-├── scripts/vendor-native.sh
-├── scripts/localize_preset.py
-└── .github/workflows/          # 测试 + 多平台发布
-```
+- [`patches/linux.patch`](patches/linux.patch) 补充官方准备脚本中的 Linux x64 目标及 Electron 可执行文件路径，保留官方运行时完整性检查、Host 启动和关闭流程。
+- [`electron-builder.config.mjs`](electron-builder.config.mjs) 复用官方文件收集与校验钩子，增加 deb/rpm、独立包名、应用 ID、图标及系统依赖。Linux 使用普通应用目录而非 ASAR，避免 Electron 44 将不存在的原生 Office 包误判为已安装，并允许捆绑的 WASM 引擎正常回退、访问实际文件。
+- 使用独立的 `dsh-workbench` 品牌和 Electron 配置目录；不会安装旧 Tauri 壳的语音、ModLens、市场或预设扩展。Harness 数据仍按官方逻辑存储于 `~/.dsh`，卸载不删除这些数据。
+- 不注册官方 `dsh://` 协议或系统 `dsh` 命令，不绑定官方桌面更新源或强制更新服务。更新方式是重新安装本项目的 deb/rpm。
+- 仅支持 Linux x86_64。本项目没有发布服务、签名密钥或 Windows/macOS 构建。
 
-## 反馈
+## 许可证
 
-自用项目，会持续更新。bug、想法、打包问题都欢迎开 [issue](https://github.com/TommyFang2077/dsh-easy-desktop/issues)。
-
-## 上游项目与许可证
-
-引用与许可证集中列在这里，正文只介绍用户能直接使用的能力。完整版权说明见 [THIRD_PARTY.md](THIRD_PARTY.md)，许可证副本见 [docs/licenses/](docs/licenses/)。
-
-| 组件 | 上游 / 固定版本 | 许可证 |
-| --- | --- | --- |
-| DeepSeek Harness | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) · `0.1.0-rc.7` | [MIT](docs/licenses/deepseek-harness.LICENSE) |
-| ModLens | [liustack/modlens](https://github.com/liustack/modlens) · `3.16.6` | [MIT](docs/licenses/modlens.LICENSE) |
-| dshmarket | [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market) · `1.11.3` | [MIT](docs/licenses/dshmarket.LICENSE) |
-| SenseVoiceSmall ONNX | [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice) · 按需下载 | [MIT](docs/licenses/sensevoice.LICENSE) |
-| sherpa-onnx WASM | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) · `1.13.5` · 按需下载 | Apache-2.0（许可证随运行时包提供） |
-| Anchored Standard | [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard) · [`ffb845c5480a`](https://github.com/xiaobright/dsh-anchored-standard/commit/ffb845c5480adc953392a6db6f8a98ede621174b) | [MIT](docs/licenses/dsh-anchored-standard.LICENSE) · [NOTICE](docs/licenses/dsh-anchored-standard.NOTICE) |
-
-## 图标与商标
-
-应用图标使用 [Icons8 上的 DeepSeek 图标](https://icons8.com/icon/YWOidjGxCpFW/deepseek)。DeepSeek 名称与鲸鱼标志归 DeepSeek 所有。本项目是独立第三方桌面壳，与 DeepSeek、ModLens、Anchored Standard 的作者均无从属关系。
-
-## License
-
-本仓库源码为 [MIT](LICENSE)，Copyright © 2026 TommyFang2077。
-
-运行时还会用到上游 MIT 组件，版权仍归原作者，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+本项目构建脚本与 Linux 补丁采用 [MIT](LICENSE)。官方代码沿用上游 MIT 及第三方许可证；构建源码保留上游 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`，捆绑的 Node、Python、Electron 及依赖沿用各自许可证。本项目不是 DeepSeek 官方发行版。
