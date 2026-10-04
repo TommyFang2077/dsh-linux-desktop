@@ -48,6 +48,11 @@ try {
   await welcome.getByRole('button', { name: /Set up later|稍后配置/ }).click()
   const workspace = application.windows().find(page => page.url().startsWith('dsh-app://'))
   assert.ok(workspace, 'The official workspace window must exist')
+  const menu = await application.evaluate(({ BrowserWindow, Menu }) => ({
+    visible: BrowserWindow.getAllWindows().find(window => window.webContents.getURL().startsWith('dsh-app://')).isMenuBarVisible(),
+    removed: Menu.getApplicationMenu() === null,
+  }))
+  assert.deepEqual(menu, { visible: false, removed: true }, 'Linux must remove the Application/Edit menu bar, not merely hide it')
   const market = JSON.parse(readFileSync(join(temporary, 'dsh/profiles/desktop/node_modules/dshmarket/package.json'), 'utf8'))
   assert.equal(market.name, 'dshmarket')
   assert.equal(market.version, '1.66.8')

@@ -328,7 +328,7 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..9016245 100644
+index b4b8153..10c6fbf 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -705,7 +705,27 @@ index b4b8153..9016245 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -1225,7 +1383,9 @@ async function main(): Promise<void> {
+@@ -974,15 +1132,16 @@ async function main(): Promise<void> {
+     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
+   ]
+   const refreshApplicationMenu = (): void => {
+-    Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
++    Menu.setApplicationMenu(process.platform === 'linux' ? null : Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
+       label: darwin ? app.name : currentDesktopLocale().messages.application,
+       submenu: [...applicationItems(), ...devToolsItems],
+     }, ...platformMenus()]))
+     tray?.relabel()
+   }
+   refreshApplicationMenu()
+-  const trayIconPath = development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
+-  if (process.platform === 'win32') {
++  const trayIconPath = process.platform === 'linux' ? applicationIconPath
++    : development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
++  if (process.platform === 'win32' || process.platform === 'linux') {
+     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
+     try {
+       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
+@@ -1225,7 +1384,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -728,6 +748,70 @@ index f590b8b..31d8c37 100644
    }
  }
  
+diff --git a/apps/desktop/src/tray.ts b/apps/desktop/src/tray.ts
+index b2ce416..b462f28 100644
+--- a/apps/desktop/src/tray.ts
++++ b/apps/desktop/src/tray.ts
+@@ -1,11 +1,11 @@
+-/** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */
++/** Windows/Linux system tray: the way back to a hidden window and the explicit quit entry. */
+ 
+ import { Menu, nativeImage, Tray } from 'electron'
+ import type { DesktopLocale } from './locale.ts'
+ 
+ /** Main-process actions the tray triggers; both run the same paths as the window and application menu. */
+ export interface DesktopTrayOptions {
+-  /** Multi-size ICO rendered by `scripts/render-tray-icon.ts`; Windows picks the bitmap for the display scale. */
++  /** Multi-size ICO on Windows, application PNG on Linux. */
+   readonly iconPath: string
+   readonly locale: () => DesktopLocale
+   /** Show and focus the primary window. */
+diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
+index 11c3a48..dfce9e3 100644
+--- a/apps/desktop/tests/tray.spec.ts
++++ b/apps/desktop/tests/tray.spec.ts
+@@ -27,11 +27,11 @@ vi.mock('electron', () => ({
+ 
+ afterEach(() => { native.trays.length = 0; native.menus.length = 0; vi.clearAllMocks() })
+ 
+-function setup(locale = 'en') {
++function setup(locale = 'en', iconPath = 'C:/app/resources/tray.ico') {
+   let current = resolveDesktopLocale(locale)
+   const open = vi.fn()
+   const quit = vi.fn()
+-  const tray = new DesktopTray({ iconPath: 'C:/app/resources/tray.ico', locale: () => current, open, quit })
++  const tray = new DesktopTray({ iconPath, locale: () => current, open, quit })
+   return { tray, open, quit, native: native.trays[0]!, setLocale: (next: string) => { current = resolveDesktopLocale(next) } }
+ }
+ 
+@@ -39,12 +39,12 @@ function labels(menu: MenuItemConstructorOptions[]): (string | undefined)[] {
+   return menu.map(item => item.type === 'separator' ? 'separator' : item.label)
+ }
+ 
+-it('shows the application icon with its name as the tooltip and an Open / Quit menu', () => {
+-  const f = setup()
+-  expect(native.createFromPath).toHaveBeenCalledWith('C:/app/resources/tray.ico')
+-  expect(f.native.image).toEqual({ path: 'C:/app/resources/tray.ico' })
+-  expect(f.native.setToolTip).toHaveBeenCalledWith('DeepSeek Harness')
+-  expect(labels(native.menus[0]!)).toEqual(['Open DeepSeek Harness', 'separator', 'Quit DeepSeek Harness'])
++it.each(['C:/app/resources/tray.ico', '/opt/dsh-workbench/resources/icon.png'])('shows %s with its name and an Open / Quit menu', (iconPath) => {
++  const f = setup('en', iconPath)
++  expect(native.createFromPath).toHaveBeenCalledWith(iconPath)
++  expect(f.native.image).toEqual({ path: iconPath })
++  expect(f.native.setToolTip).toHaveBeenCalledWith('dsh-workbench')
++  expect(labels(native.menus[0]!)).toEqual(['Open dsh-workbench', 'separator', 'Quit dsh-workbench'])
+   expect(f.native.setContextMenu).toHaveBeenCalledWith({ template: native.menus[0] })
+ })
+ 
+@@ -63,7 +63,7 @@ it('relabels the menu in the current locale and ignores relabel after disposal',
+   const f = setup()
+   f.setLocale('zh')
+   f.tray.relabel()
+-  expect(labels(native.menus[1]!)).toEqual(['打开 DeepSeek Harness', 'separator', '退出 DeepSeek Harness'])
++  expect(labels(native.menus[1]!)).toEqual(['打开 dsh-workbench', 'separator', '退出 dsh-workbench'])
+   f.tray.dispose()
+   f.tray.dispose()
+   expect(f.native.destroy).toHaveBeenCalledOnce()
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 index e3c8cb7..d0cde09 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
