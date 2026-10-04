@@ -1,0 +1,9 @@
+{
+  "version": "0.2.1-alpha.1",
+  "protocol": 4,
+  "dataEpoch": "dsh-0.2.1-alpha.1",
+  "desktopRange": ">=0.2.1-alpha.1 <0.3.0",
+  "nodeRange": ">=24.18.1 <25.0.0",
+  "nodeVersion": "24.18.1",
+  "kernelRange": ">=0.2.1-alpha.1 <0.3.0"
+}

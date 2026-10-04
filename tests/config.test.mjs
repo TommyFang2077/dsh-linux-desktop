@@ -20,8 +20,11 @@ test('Linux x64 packages use independent identity and no official updater', () =
   assert.equal(config.extraMetadata.dshMandatoryUpdatePolicy, undefined)
   assert.equal(config.publish, null)
   assert.equal(config.asar, false)
+  assert.ok(config.deb.depends.includes('python3') && config.deb.depends.includes('pkexec'))
+  assert.ok(config.rpm.depends.includes('python3') && config.rpm.depends.includes('polkit') && config.rpm.depends.includes('dnf'))
   assert.deepEqual(config.protocols, [])
-  assert.deepEqual(config.rpm.fpm, ['--rpm-rpmbuild-define', '_rpmformat 4'])
+  assert.deepEqual(config.rpm.fpm, ['--rpm-rpmbuild-define', '_rpmformat 4', '--rpm-rpmbuild-define', '_smp_build_ncpus 2', '--rpm-compression-level', '1', '--log', 'info'])
+  assert.deepEqual(config.deb.fpm, ['--deb-compression-level', '1'])
 })
 
 test('packaged modes reject group/other writes without following symlinks', () => {

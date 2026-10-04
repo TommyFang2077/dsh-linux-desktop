@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <title>软件更新</title>
+  <link rel="stylesheet" href="updates.css">
+</head>
+<body>
+  <main>
+    <h1>软件更新</h1>
+    <p>内核与桌面端分别检查、下载和安装。</p>
+    <section aria-labelledby="kernel-title">
+      <h2 id="kernel-title">dsh 内核</h2>
+      <p>会话引擎、WebUI、Host 及配套运行时。安装在用户目录，无需管理员权限。</p>
+      <p id="kernel-version">正在读取版本…</p>
+      <p id="kernel-source"></p>
+      <div class="actions"><button data-action="check" data-channel="kernel">检查内核更新</button><button data-action="install" data-channel="kernel" disabled>更新内核</button></div>
+    </section>
+    <section aria-labelledby="desktop-title">
+      <h2 id="desktop-title">桌面端</h2>
+      <p>Electron 窗口及系统集成。通过 deb/rpm 安装，需要系统授权；保留兼容的新内核。</p>
+      <p id="desktop-version">正在读取版本…</p>
+      <p id="desktop-source"></p>
+      <div class="actions"><button data-action="check" data-channel="desktop">检查桌面更新</button><button data-action="install" data-channel="desktop" disabled>更新桌面端</button></div>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+    <p id="error" role="alert"></p>
+    <small>下载须通过发布签名、完整性和兼容性检查。更新不删除会话或 API 配置。</small>
+  </main>
+  <script src="updates.js"></script>
+</body>
+</html>

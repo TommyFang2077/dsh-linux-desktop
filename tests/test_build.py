@@ -46,8 +46,8 @@ class BuildTests(unittest.TestCase):
     def test_wrong_package_identity_never_writes_checksums(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(build, "DIST", Path(directory)):
             for extension in ("deb", "rpm"):
-                (build.DIST / f"dsh-workbench-{build.LOCK['version']}-x64.{extension}").write_bytes(b"package")
-            version = build.LOCK["version"].replace("-", "~")
+                (build.DIST / f"dsh-workbench-{build.DESKTOP['version']}-x64.{extension}").write_bytes(b"package")
+            version = build.DESKTOP["version"].replace("-", "~")
             with patch.object(build.subprocess, "check_output", side_effect=["other-package", version, "amd64", f"dsh-workbench\n{version}\nx86_64"]):
                 with self.assertRaisesRegex(RuntimeError, "Unexpected package identity"):
                     build.verify()
@@ -56,14 +56,24 @@ class BuildTests(unittest.TestCase):
     def test_world_writable_payload_never_writes_checksums(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(build, "DIST", Path(directory)):
             for extension in ("deb", "rpm"):
-                (build.DIST / f"dsh-workbench-{build.LOCK['version']}-x64.{extension}").write_bytes(b"package")
-            version = build.LOCK["version"].replace("-", "~")
+                (build.DIST / f"dsh-workbench-{build.DESKTOP['version']}-x64.{extension}").write_bytes(b"package")
+            version = build.DESKTOP["version"].replace("-", "~")
             listing = "-rwxrwxrwx /opt/dsh-workbench/dsh-workbench\n-rw-r--r-- resources/app/package.json\n-rw-r--r-- applications/dsh-workbench.desktop\n"
             responses = ["dsh-workbench", version, "amd64", f"dsh-workbench\n{version}\nx86_64", listing]
             with patch.object(build.subprocess, "check_output", side_effect=responses):
                 with self.assertRaisesRegex(RuntimeError, "unsafe writable permissions"):
                     build.verify()
             self.assertFalse((build.DIST / "SHA256SUMS").exists())
+
+    def test_desktop_version_is_independent_of_the_pinned_kernel(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "DIST", Path(directory)), patch.object(build, "DESKTOP", {"version": "9.0.0"}):
+            for extension in ("deb", "rpm"):
+                (build.DIST / f"dsh-workbench-9.0.0-x64.{extension}").write_bytes(b"package")
+            listing = "-rwxr-xr-x /opt/dsh-workbench/dsh-workbench\n-rw-r--r-- resources/app/package.json\n-rw-r--r-- applications/dsh-workbench.desktop\n"
+            replies = ["dsh-workbench", "9.0.0", "amd64", "dsh-workbench\n9.0.0\nx86_64", listing, listing]
+            with patch.object(build.subprocess, "check_output", side_effect=replies), contextlib.redirect_stdout(io.StringIO()):
+                build.verify()
+            self.assertTrue((build.DIST / "SHA256SUMS").exists())
 
     def test_source_is_pinned_not_a_moving_branch(self):
         self.assertRegex(build.LOCK["commit"], r"^[0-9a-f]{40}$")

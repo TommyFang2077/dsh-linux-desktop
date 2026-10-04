@@ -191,6 +191,26 @@ index 1b88f09..1b5c501 100644
    if (macosMinimumVersion !== undefined) prepareCommandLink(join(RUNTIME_ROOT, 'cli'), arch, macosMinimumVersion)
    cpSync(join(import.meta.dirname, '..', 'lib', 'command-manager-entry.js'), join(RUNTIME_ROOT, 'cli', 'command-manager.js'))
    cpSync(join(import.meta.dirname, 'command-path.ps1'), join(RUNTIME_ROOT, 'cli', 'command-path.ps1'))
+diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
+index fc19021..ebfdfb0 100644
+--- a/apps/desktop/src/ipc.ts
++++ b/apps/desktop/src/ipc.ts
+@@ -27,6 +27,7 @@ export const DESKTOP_IPC = {
+   updatesStatus: 'dsh-desktop:updates-status',
+   updatesOpen: 'dsh-desktop:updates-open',
+   updatesPresentation: 'dsh-desktop:updates-presentation',
++  openWorkbenchUpdates: 'dsh-workbench:open-updates',
+   nativeThemeSet: 'dsh-desktop:native-theme-set',
+   windowFullscreen: 'dsh-desktop:window-fullscreen',
+   windowsAppearance: 'dsh-desktop:windows-appearance',
+@@ -84,6 +85,7 @@ export interface DshDesktopProductApi {
+     open(): Promise<void>
+     subscribe(listener: (state: DesktopUpdatePresentation) => void): () => void
+   }
++  openWorkbenchUpdates(): Promise<void>
+ }
+ 
+ /** Scheme of Desktop-owned application documents. */
 diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
 index 5d9d460..bec0ff5 100644
 --- a/apps/desktop/src/locale.ts
@@ -308,10 +328,363 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..6eee9a6 100644
+index b4b8153..9016245 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -925,7 +925,7 @@ async function main(): Promise<void> {
+@@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
+ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+ 
+-import { readFile, writeFile } from 'node:fs/promises'
+-import { join } from 'node:path'
++import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
++import { dirname, join } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import {
+   app,
+@@ -52,7 +52,7 @@ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.t
+ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
+ import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
+ import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
+-import { readDesktopRuntime } from './runtime-tree.ts'
++import { readDesktopRuntime, verifyDesktopRuntime } from './runtime-tree.ts'
+ import { DesktopBrowserGuests } from './browser-guests.ts'
+ import { installDesktopShortcuts } from './keyboard.ts'
+ import { DesktopUpdateOverlays } from './update-overlay.ts'
+@@ -148,7 +148,43 @@ interface RuntimeResources {
+   readonly dsh: string
+ }
+ 
++interface WorkbenchKernel {
++  readonly dsh: string
++  readonly runtime: string
++  readonly version: string
++}
++
++interface WorkbenchUpdates {
++  readonly selected: WorkbenchKernel
++  markHealthy(): Promise<void>
++  ensureDefaults(home: string): Promise<void>
++  rollback(): Promise<boolean>
++  open(): void
++}
++
++/** Packaged downstream updater, emitted separately from the upstream main bundle. */
++interface WorkbenchUpdateModule {
++  createWorkbenchUpdates(options: {
++    app: typeof app
++    bundled: { dsh: string; runtime: string }
++    verifyKernel: (dsh: string, version: string) => Promise<unknown>
++    probeKernel: (kernel: { dsh: string; runtime: string }) => Promise<void>
++    prepareRestart: () => Promise<boolean>
++    restart: () => void
++    recover: () => Promise<void>
++    trustedSender: (event: IpcMainInvokeEvent) => boolean
++  }): Promise<WorkbenchUpdates>
++}
++
++let selectedKernel: WorkbenchKernel | undefined
++
+ function runtimeResources(): RuntimeResources {
++  if (selectedKernel !== undefined) return {
++    node: process.execPath,
++    nodeBin: join(selectedKernel.runtime, 'bin'),
++    pnpm: join(selectedKernel.runtime, 'pnpm', 'bin', 'pnpm.mjs'),
++    dsh: selectedKernel.dsh,
++  }
+   const development = !app.isPackaged
+   const node = process.execPath
+   const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
+@@ -160,6 +196,61 @@ function runtimeResources(): RuntimeResources {
+   return { node, nodeBin, pnpm, dsh }
+ }
+ 
++/** Check a candidate Host and WebUI without reading the user's profile or credentials. */
++async function probeWorkbenchKernel(kernel: { dsh: string; runtime: string }): Promise<void> {
++  const version = readDesktopRuntime(kernel.dsh).release.version
++  const temporary = await mkdtemp(join(app.getPath('temp'), 'dsh-workbench-probe-'))
++  const home = join(temporary, 'dsh')
++  const paths = resolveDesktopPaths(home)
++  const environment: NodeJS.ProcessEnv = {
++    PATH: process.env.PATH,
++    LANG: process.env.LANG,
++    HOME: temporary,
++    DSH_HOME: home,
++    XDG_CONFIG_HOME: join(temporary, 'config'),
++    XDG_DATA_HOME: join(temporary, 'data'),
++    XDG_CACHE_HOME: join(temporary, 'cache'),
++    TMPDIR: temporary,
++    DSH_CLIENT_VERSION: version,
++  }
++  const host = new DesktopHostProcess(process.execPath, kernel.dsh, paths.profile, undefined, environment,
++    undefined, join(kernel.runtime, 'primary-runtime'), {
++      pnpm: join(kernel.runtime, 'pnpm', 'bin', 'pnpm.mjs'), nodeBin: join(kernel.runtime, 'bin'),
++    })
++  const controller = new AbortController()
++  const deadline = setTimeout(() => { controller.abort(new Error('Kernel health check timed out')) }, 50_000)
++  try {
++    await new DesktopProjectManager(paths, { dsh: kernel.dsh }).applyRelease()
++    controller.signal.throwIfAborted()
++    const interrupted = new Promise<never>((_resolve, reject) => {
++      controller.signal.addEventListener('abort', () => { reject(controller.signal.reason) }, { once: true })
++    })
++    const ready = await Promise.race([host.start(), interrupted])
++    const address = new URL(ready.url)
++    if (address.protocol !== 'http:' || address.hostname !== '127.0.0.1' || ready.injections === undefined) {
++      throw new Error('Kernel health check returned invalid readiness metadata')
++    }
++    const login = await fetch(address, { signal: controller.signal, redirect: 'manual' })
++    const cookie = login.headers.getSetCookie().map(value => value.split(';', 1)[0]).join('; ')
++    await login.body?.cancel()
++    const response = await fetch(new URL('/', address), {
++      signal: controller.signal, redirect: 'error', headers: { cookie },
++    })
++    if (!response.ok || !(response.headers.get('content-type') ?? '').includes('text/html')) {
++      throw new Error('Kernel WebUI health check failed')
++    }
++    await response.body?.cancel()
++  } finally {
++    clearTimeout(deadline)
++    try { await host.stop(true) }
++    catch (error) {
++      if (error instanceof DesktopHostUncleanExitError) await rm(temporary, { recursive: true, force: true })
++      throw error
++    }
++    await rm(temporary, { recursive: true, force: true })
++  }
++}
++
+ function developmentPrimaryRuntime(): string {
+   const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
+   if (directory === undefined || directory === '') {
+@@ -316,12 +407,32 @@ async function main(): Promise<void> {
+   void pruneCrashReports(app.getPath('logs'))
+   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
+   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
++  const development = !app.isPackaged
++  let workbench: WorkbenchUpdates | undefined
++  if (process.platform === 'linux' && app.isPackaged) {
++    // This independently emitted ESM module is a downstream packaging interface, not an upstream workspace import.
++    const module = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
++    workbench = await module.createWorkbenchUpdates({
++      app,
++      bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
++      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
++      probeKernel: probeWorkbenchKernel,
++      prepareRestart: () => prepareWorkbenchRestart(),
++      restart: () => { app.relaunch(); quitWithoutConfirmation() },
++      recover: () => recoverWorkbenchBackend(),
++      trustedSender: (event) => {
++        try { assertProductSender(event); return true }
++        catch (_error) { return false }
++      },
++    })
++    selectedKernel = workbench.selected
++  }
+   const resources = runtimeResources()
+   const paths = resolveDesktopPaths()
+-  const development = !app.isPackaged
+-  const primaryRuntime = development
+-    ? developmentPrimaryRuntime()
+-    : join(process.resourcesPath, 'runtime', 'primary-runtime')
++  let primaryRuntime = selectedKernel === undefined
++    ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
++    : join(selectedKernel.runtime, 'primary-runtime')
++  let workbenchStartup = workbench !== undefined
+   const activeProject = paths.profile
+   const manager = new DesktopProjectManager(paths, resources)
+   // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
+@@ -508,8 +619,9 @@ async function main(): Promise<void> {
+       inspectQuit: () => host.inspectQuit(),
+     }
+   }, (state) => {
+-    if (state.phase === 'error') reportFatal(state.failure, 'host')
+-    else if (!shuttingDown) backendReady = state.phase === 'ready'
++    if (state.phase === 'error') {
++      if (!workbenchStartup) reportFatal(state.failure, 'host')
++    } else if (!shuttingDown) backendReady = state.phase === 'ready'
+   })
+ 
+   const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
+@@ -564,77 +676,120 @@ async function main(): Promise<void> {
+   }
+   stopForRecovery = () => backend.close()
+ 
++  const selectWorkbenchResources = (): void => {
++    if (workbench === undefined) return
++    selectedKernel = workbench.selected
++    Object.assign(resources, runtimeResources())
++    primaryRuntime = join(selectedKernel.runtime, 'primary-runtime')
++  }
+   const reconcileBackend = (): Promise<void> => {
+     startup ??= (async () => {
+-      await navigateMain(applicationUrl)
+-      await backend.start(async () => {
+-        await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
+-      })
+-      if (backend.host !== undefined) await openInitialWindow()
+-      if (backend.host !== undefined) updateJournal?.action('workspace-ready')
++      const start = async (): Promise<void> => {
++        await navigateMain(applicationUrl)
++        await backend.start(async () => {
++          await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
++          await workbench?.ensureDefaults(dirname(dirname(paths.profile)))
++        })
++        if (quitting) return
++        if (backend.host === undefined) throw new Error('Desktop Host did not become ready')
++        await openInitialWindow()
++        if (quitting) return
++        if (backend.host === undefined) throw new Error('Desktop Host stopped before startup completed')
++        await workbench?.markHealthy()
++        updateJournal?.action('workspace-ready')
++      }
++      try { await start() }
++      catch (error) {
++        if (quitting || workbench === undefined || !await workbench.rollback()) throw error
++        await backend.stop()
++        selectWorkbenchResources()
++        hostUrl = undefined
++        hostCookie = undefined
++        injections = []
++        navigation = undefined
++        await start()
++      }
++      workbenchStartup = false
+       // The existing Web document resumes through the boot IPC response.
+     })().catch((error: unknown) => {
++      workbenchStartup = false
+       updateJournal?.action('workspace-failed')
+       reportFatal(error, 'main')
+       throw error
+     }).finally(() => { startup = undefined })
+     return startup
+   }
+-
++  const recoverWorkbenchBackend = async (): Promise<void> => {
++    shellInstallerOwnsQuit = false
++    updateStoppedHost = false
++    requireCleanStop = false
++    updateStopFailure = undefined
++    if (quitting || backend.host !== undefined) return
++    workbenchStartup = workbench !== undefined
++    await backend.stop()
++    selectWorkbenchResources()
++    navigation = undefined
++    await reconcileBackend()
++  }
++  const prepareRestart = async (independentUpdate = false): Promise<boolean> => {
++    await commandManager.idle()
++    await workspaceRecovery
++    await startup?.catch(() => undefined)
++    if (quitting) return false
++    const host = backend.host
++    if (host === undefined) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
++    const active = await host.updateTasks('inspect')
++    const ready = independentUpdate
++      ? { message: locale.messages.installAndRestart, detail: locale.messages.updateDownloadedDetail }
++      : desktopUpdateReadyConfirmation(locale.messages, updates.state.version ?? '', process.platform)
++    const confirmation: Electron.MessageBoxOptions = {
++      type: active ? 'warning' : 'info', title: locale.messages.updateTitle,
++      message: active ? locale.messages.updateActiveTasks : ready.message,
++      detail: active ? locale.messages.updateActiveTasksDetail : ready.detail,
++      buttons: [active ? locale.messages.updateStopTasks : locale.messages.installAndRestart, locale.messages.updateLater],
++      defaultId: 1, cancelId: 1,
++    }
++    if (isMandatory()) {
++      if (!await mandatoryUI?.confirm(updates.state.version ?? '', active)) return false
++    } else {
++      const parent = currentDialogWindow()
++      if (parent === undefined) return false
++      const result = await updateDialog.show(parent, confirmation)
++      if (result.response !== 0 || isMandatory()) return false
++    }
++    if (isQuitting()) return false
++    // The update lock rejects new HTTP requests, including analytics intake.
++    await track('desktop_upgrade_install_restart_click', {})
++    if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
++    try {
++      const stillActive = await host.updateTasks('lock')
++      if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
++      mandatoryUI?.preparingRestart(stillActive)
++      // The embedded Platform document holds credentials issued by the Host that is about to stop.
++      await platformView.closeAndWait()
++      requireCleanStop = true
++      updateStopFailure = undefined
++      await backend.stop()
++      updateStoppedHost = true
++      // The backend's async cleanup callback can assign this after the reset above.
++      const stopFailure = updateStopFailure as DesktopHostUncleanExitError | undefined
++      if (stopFailure !== undefined) throw new DesktopUpdatePreparationError('stop-failed', locale.messages.updateStopFailed, stopFailure.message)
++      updateJournal?.action('install-confirmed')
++      shellInstallerOwnsQuit = true
++    } catch (error) {
++      if (!updateStoppedHost) await host.updateTasks('unlock').catch((unlockError: unknown) => { console.error(unlockError) })
++      throw error
++    } finally {
++      requireCleanStop = false
++    }
++    return true
++  }
++  const prepareWorkbenchRestart = (): Promise<boolean> => prepareRestart(true)
+   const updates = new DesktopUpdateCoordinator(
+     publishUpdate,
+-    async () => {
+-      await commandManager.idle()
+-      await workspaceRecovery
+-      await startup?.catch(() => undefined)
+-      const host = backend.host
+-      if (host === undefined) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
+-      const active = await host.updateTasks('inspect')
+-      const ready = desktopUpdateReadyConfirmation(locale.messages, updates.state.version ?? '', process.platform)
+-      const confirmation: Electron.MessageBoxOptions = {
+-        type: active ? 'warning' : 'info', title: locale.messages.updateTitle,
+-        message: active ? locale.messages.updateActiveTasks : ready.message,
+-        detail: active ? locale.messages.updateActiveTasksDetail : ready.detail,
+-        buttons: active ? [locale.messages.updateStopTasks, locale.messages.updateLater] : [locale.messages.installAndRestart],
+-        defaultId: 1, cancelId: 1,
+-      }
+-      if (isMandatory()) {
+-        if (!await mandatoryUI?.confirm(updates.state.version ?? '', active)) return false
+-      } else {
+-        const parent = currentDialogWindow()
+-        if (parent === undefined) return false
+-        const result = await updateDialog.show(parent, confirmation)
+-        if (result.response !== 0 || isMandatory()) return false
+-      }
+-      // The update lock rejects new HTTP requests, including analytics intake.
+-      await track('desktop_upgrade_install_restart_click', {})
+-      if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
+-      try {
+-        const stillActive = await host.updateTasks('lock')
+-        if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
+-        mandatoryUI?.preparingRestart(stillActive)
+-        // The embedded Platform document holds credentials issued by the Host that is about to stop.
+-        await platformView.closeAndWait()
+-        requireCleanStop = true
+-        updateStopFailure = undefined
+-        await backend.stop()
+-        updateStoppedHost = true
+-        // The backend's async cleanup callback can assign this after the reset above.
+-        const stopFailure = updateStopFailure as DesktopHostUncleanExitError | undefined
+-        if (stopFailure !== undefined) throw new DesktopUpdatePreparationError('stop-failed', locale.messages.updateStopFailed, stopFailure.message)
+-        updateJournal?.action('install-confirmed')
+-        shellInstallerOwnsQuit = true
+-      } catch (error) {
+-        if (!updateStoppedHost) await host.updateTasks('unlock').catch((unlockError: unknown) => { console.error(unlockError) })
+-        throw error
+-      } finally {
+-        requireCleanStop = false
+-      }
+-      return true
+-    },
++    () => prepareRestart(),
+     undefined, undefined, undefined,
+     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
+-
+   )
+ 
+   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
+@@ -925,7 +1080,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -320,17 +693,19 @@ index b4b8153..6eee9a6 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -952,7 +952,8 @@ async function main(): Promise<void> {
+@@ -952,7 +1107,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
 -    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
++    ...workbench === undefined ? []
++      : [{ label: currentDesktopLocale().messages.updateTitle, click: () => { workbench?.open() } }],
 +    ...process.platform === 'linux' ? []
 +      : [{ label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } }],
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -1225,7 +1226,9 @@ async function main(): Promise<void> {
+@@ -1225,7 +1383,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -341,3 +716,117 @@ index b4b8153..6eee9a6 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
+index f590b8b..31d8c37 100644
+--- a/apps/desktop/src/preload-app.ts
++++ b/apps/desktop/src/preload-app.ts
+@@ -55,6 +55,7 @@ function createProductApi(): DshDesktopProductApi {
+         return () => { ipcRenderer.off(DESKTOP_IPC.updatesPresentation, handle) }
+       },
+     },
++    openWorkbenchUpdates: () => ipcRenderer.invoke(DESKTOP_IPC.openWorkbenchUpdates) as Promise<void>,
+   }
+ }
+ 
+diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
+index e3c8cb7..d0cde09 100644
+--- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
++++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
+@@ -2,13 +2,25 @@
+ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+ import css from './CurrentVersionRow.module.css'
+ 
++interface CurrentVersionRowInjected {
++  openWorkbenchUpdates?: () => Promise<void>
++}
++
+ /**
+  * Render the version embedded by the client build; partial builds without metadata omit the row.
+  * @param props - runtime share and localized copy.
+  * @returns the current release label, or nothing when build metadata is absent.
+  */
+-export function CurrentVersionRow({ t }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'>) {
++export function CurrentVersionRow({ t, openWorkbenchUpdates }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'> & CurrentVersionRowInjected) {
+   const version = process.env.DSH_CLIENT_VERSION
+-  if (version === undefined) return null
+-  return <div className={css.row}>{t('general.currentVersion', { version })}</div>
++  if (version === undefined && openWorkbenchUpdates === undefined) return null
++  return <div className={css.row}>
++    {version !== undefined && t('general.currentVersion', { version })}
++    {openWorkbenchUpdates !== undefined && <button type="button" onClick={() => { void openWorkbenchUpdates().catch((error: unknown) => {
++      // The Electron shell owns update-window failures; keep its IPC rejection out of the page.
++      void error
++    }) }}>
++      {t('general.workbenchUpdates')}
++    </button>}
++  </div>
+ }
+diff --git a/packages/client/ui-settings-general/src/client/index.ts b/packages/client/ui-settings-general/src/client/index.ts
+index a17ea2c..c84bc67 100644
+--- a/packages/client/ui-settings-general/src/client/index.ts
++++ b/packages/client/ui-settings-general/src/client/index.ts
+@@ -81,13 +81,21 @@ export function apply(ctx: ClientContext): void {
+     }),
+   }, DeveloperToolsRow))
+   // Version information follows the core preferences.
++  const carrier = (globalThis as typeof globalThis & { dshDesktop?: {
++    protocolVersion: number
++    updates?: DesktopUpdateBridge
++    openWorkbenchUpdates?: () => Promise<void>
++  } }).dshDesktop
++  const desktopApi = carrier?.protocolVersion === 1 ? carrier : undefined
+   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+     name: 'settings.general.item', id: 'current-version', order: 100, locale: NS,
++    inject: () => desktopApi?.openWorkbenchUpdates === undefined
++      ? {}
++      : { openWorkbenchUpdates: desktopApi.openWorkbenchUpdates },
+   }, CurrentVersionRow))
+   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-settings-general: dictionaries')
+   const connection = ctx.get('connection') as ConnectionHandle
+-  const carrier = (globalThis as typeof globalThis & { dshDesktop?: { protocolVersion: number; updates?: DesktopUpdateBridge } }).dshDesktop
+-  const desktopUpdate = new DesktopUpdateSource(carrier?.protocolVersion === 1 ? carrier.updates : undefined)
++  const desktopUpdate = new DesktopUpdateSource(desktopApi?.updates)
+   ctx.effect(() => () => { desktopUpdate.dispose() }, 'ui-settings-general: desktop update carrier')
+   ctx.slots.inject('sidebar.toggle.badge', () => ctx.slots.register({
+     name: 'sidebar.toggle.badge', locale: NS,
+diff --git a/packages/client/ui-settings-general/src/client/locales.ts b/packages/client/ui-settings-general/src/client/locales.ts
+index 8d0f253..83ac05f 100644
+--- a/packages/client/ui-settings-general/src/client/locales.ts
++++ b/packages/client/ui-settings-general/src/client/locales.ts
+@@ -28,6 +28,7 @@ export const zh = {
+   'openDocument.error': '无法打开配置文件',
+   'general.nav': '通用设置',
+   'general.currentVersion': '当前版本：{version}',
++  'general.workbenchUpdates': '软件更新',
+   'developerTools.title': '显示代码工作视图',
+   'developerTools.error': '保存失败，请重试',
+   'developerTools.description': '开启后，显示轨迹、本轮代码差异，可选择完整的 Agent 预设切换',
+@@ -69,6 +70,7 @@ export const en = {
+   'openDocument.error': 'Could not open configuration file',
+   'general.nav': 'General',
+   'general.currentVersion': 'Current version: {version}',
++  'general.workbenchUpdates': 'Software updates',
+   'developerTools.title': 'Show coding view',
+   'developerTools.error': 'Could not save. Please try again.',
+   'developerTools.description': 'Shows trajectory, code diffs, and all Agent presets',
+diff --git a/packages/client/ui-settings-general/tests/components.client.spec.tsx b/packages/client/ui-settings-general/tests/components.client.spec.tsx
+index ac2e7f0..5a7342d 100644
+--- a/packages/client/ui-settings-general/tests/components.client.spec.tsx
++++ b/packages/client/ui-settings-general/tests/components.client.spec.tsx
+@@ -240,6 +240,16 @@ describe('current version', () => {
+     expect(screen.queryByRole('button')).toBeNull()
+   })
+ 
++  it('opens the separate workbench updates window only when the desktop bridge is available', () => {
++    vi.stubEnv('DSH_CLIENT_VERSION', undefined)
++    const openWorkbenchUpdates = vi.fn(() => Promise.resolve())
++    const web = render(<CurrentVersionRow {...kit} t={t} />)
++    expect(web.queryByRole('button')).toBeNull()
++    web.rerender(<CurrentVersionRow {...kit} t={t} openWorkbenchUpdates={openWorkbenchUpdates} />)
++    fireEvent.click(screen.getByRole('button', { name: en['general.workbenchUpdates'] }))
++    expect(openWorkbenchUpdates).toHaveBeenCalledOnce()
++  })
++
+   it('omits the row when a partial build has no version metadata', () => {
+     vi.stubEnv('DSH_CLIENT_VERSION', undefined)
+     const view = render(<CurrentVersionRow {...kit} t={t} />)

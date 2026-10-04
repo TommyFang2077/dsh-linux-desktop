@@ -16,6 +16,7 @@ SOURCE = ROOT / "build/upstream"
 APP = SOURCE / "apps/desktop"
 DIST = ROOT / "dist"
 LOCK = json.loads((ROOT / "upstream.json").read_text())
+DESKTOP = json.loads((ROOT / "desktop.json").read_text())
 ENV = {
     **os.environ,
     "LEFTHOOK": "0",
@@ -65,6 +66,7 @@ def prepare():
 
 def build():
     pnpm("run", "build:official")
+    run("node", ROOT / "scripts/build-updates.mjs", cwd=ROOT)
 
 
 def package():
@@ -81,17 +83,22 @@ def package():
     pnpm("--dir", "native/system/packages/entry", "pack", "--pack-destination", landlock)
     for stage in ("prepare:runtime", "prepare:packages", "prepare:dsh"):
         pnpm("run", stage, cwd=APP)
-    pnpm("exec", "node", "--input-type=module", "-e",
-         "import sharp from 'sharp'; await sharp(process.argv[1]).resize(512).png().toFile(process.argv[2])",
-         ROOT / "resources/icon.svg", ROOT / "build/icon.png", cwd=APP)
     bundle()
 
 
 def bundle():
+    run("node", ROOT / "scripts/build-icons.mjs", cwd=ROOT)
+    prepared = APP / ".desktop-build/targets/linux-x64"
+    release = json.loads((prepared / "dsh/desktop-runtime.json").read_text())["release"]
+    runtime = json.loads((prepared / "runtime/versions.json").read_text())
+    if release["hostProtocolVersion"] != DESKTOP["protocol"] or runtime["node"] != DESKTOP["nodeVersion"]:
+        raise RuntimeError("desktop.json compatibility metadata differs from the prepared Host/Node runtime")
+    run("node", ROOT / "scripts/build-updates.mjs", cwd=ROOT)
     # NTFS/exFAT cannot preserve Unix modes; installers are always staged on Linux /tmp.
     with tempfile.TemporaryDirectory(prefix="dsh-workbench-package-", dir="/tmp") as directory:
         output = Path(directory)
-        env = {**ENV, "DSH_WORKBENCH_OUTPUT": directory, "TMPDIR": directory, "TMP": directory, "TEMP": directory}
+        env = {**ENV, "DSH_WORKBENCH_OUTPUT": directory, "TMPDIR": directory, "TMP": directory, "TEMP": directory,
+               "OMP_NUM_THREADS": ENV.get("OMP_NUM_THREADS", "2")}
         shutil.copyfile(ROOT / "build/icon.png", output / "icon.png")
         (output / "icon.png").chmod(0o644)
         pnpm("exec", "electron-builder", "--config", ROOT / "electron-builder.config.mjs",
@@ -99,20 +106,20 @@ def bundle():
         pnpm("exec", "tsx", ROOT / "scripts/smoke.mts", env=env)
         verify(output)
         DIST.mkdir(exist_ok=True)
-        names = [f"dsh-workbench-{LOCK['version']}-x64.{extension}" for extension in ("deb", "rpm")]
+        names = [f"dsh-workbench-{DESKTOP['version']}-x64.{extension}" for extension in ("deb", "rpm")]
         for name in [*names, "SHA256SUMS", "build-info.json"]:
             shutil.copyfile(output / name, DIST / name)
 
 
 def launch():
     with tempfile.TemporaryDirectory(prefix="dsh-workbench-run-", dir="/tmp") as directory:
-        run("dpkg-deb", "--extract", DIST / f"dsh-workbench-{LOCK['version']}-x64.deb", directory, cwd=ROOT)
+        run("dpkg-deb", "--extract", DIST / f"dsh-workbench-{DESKTOP['version']}-x64.deb", directory, cwd=ROOT)
         run(Path(directory) / "opt/dsh-workbench/dsh-workbench", cwd=ROOT)
 
 
 def verify(directory=None):
     directory = DIST if directory is None else Path(directory)
-    files = [directory / f"dsh-workbench-{LOCK['version']}-x64.{extension}" for extension in ("deb", "rpm")]
+    files = [directory / f"dsh-workbench-{DESKTOP['version']}-x64.{extension}" for extension in ("deb", "rpm")]
     if any(not file.is_file() or file.stat().st_size == 0 for file in files):
         raise RuntimeError("Both non-empty deb and rpm packages are required")
     deb, rpm = files
@@ -120,7 +127,7 @@ def verify(directory=None):
                     for field in ("Package", "Version", "Architecture")]
     rpm_metadata = subprocess.check_output(
         ["rpm", "-qp", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}", str(rpm)], text=True).splitlines()
-    version = LOCK["version"].replace("-", "~")
+    version = DESKTOP["version"].replace("-", "~")
     if deb_metadata != ["dsh-workbench", version, "amd64"] or rpm_metadata != ["dsh-workbench", version, "x86_64"]:
         raise RuntimeError("Unexpected package identity, version, or architecture")
     for command, file in ((["dpkg-deb", "--contents"], deb),
@@ -140,7 +147,7 @@ def verify(directory=None):
         sums.append(f"{digest}  {file.name}\n")
         print(f"Verified {file.name} ({file.stat().st_size:,} bytes)")
     (directory / "SHA256SUMS").write_text("".join(sums))
-    (directory / "build-info.json").write_text(json.dumps({**LOCK, "target": "linux-x64", "official": False}, indent=2) + "\n")
+    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "target": "linux-x64", "official": False}, indent=2) + "\n")
 
 
 def main():

@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readdirSync } from 'node:fs'
+import { chmodSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createElectronBuilderConfig } from './build/upstream/apps/desktop/scripts/electron-builder-config.mjs'
 
@@ -33,11 +33,20 @@ export default {
   directories: { output },
   afterPack: async context => {
     await config.afterPack(context)
+    const workbench = join(context.appOutDir, 'resources/app/workbench')
+    for (const file of ['desktop.json', 'updates.json']) JSON.parse(readFileSync(join(workbench, file), 'utf8'))
     hardenPermissions(context.appOutDir)
   },
   protocols: [],
+  files: [
+    ...config.files,
+    'lib/workbench.mjs',
+    'lib/workbench-archive.mjs',
+    { from: join(root, 'build/workbench-assets'), to: 'workbench', filter: ['**/*'] },
+  ],
   extraMetadata: {
     ...config.extraMetadata,
+    version: JSON.parse(readFileSync(join(root, 'desktop.json'), 'utf8')).version,
     name: 'dsh-workbench',
     desktopName: 'dsh-workbench.desktop',
     description: 'Unofficial Linux desktop build of DeepSeek Harness',
@@ -50,6 +59,7 @@ export default {
     { from: join(root, 'build/upstream/LICENSE'), to: 'licenses/DeepSeek-Harness.LICENSE' },
     { from: join(root, 'build/upstream/THIRD_PARTY_NOTICES.md'), to: 'licenses/THIRD_PARTY_NOTICES.md' },
     { from: join(root, 'LICENSE'), to: 'licenses/dsh-workbench.LICENSE' },
+    { from: join(root, 'resources/dsh.ico'), to: 'icon.ico' },
   ],
   linux: {
     target: ['deb', 'rpm'],
@@ -61,14 +71,17 @@ export default {
     maintainer: 'dsh-workbench contributors',
   },
   deb: {
+    compression: 'gz',
+    fpm: ['--deb-compression-level', '1'],
     depends: [
       'libgtk-3-0 | libgtk-3-0t64', 'libnss3', 'libxss1', 'libxtst6', 'libgbm1',
-      'libasound2 | libasound2t64', 'libatspi2.0-0 | libatspi2.0-0t64', 'xdg-utils',
+      'libasound2 | libasound2t64', 'libatspi2.0-0 | libatspi2.0-0t64', 'xdg-utils', 'python3', 'pkexec', 'apt',
     ],
   },
   rpm: {
-    fpm: ['--rpm-rpmbuild-define', '_rpmformat 4'],
-    depends: ['gtk3', 'nss', 'libXScrnSaver', 'libXtst', 'libdrm', 'mesa-libgbm', 'alsa-lib', 'at-spi2-core', 'xdg-utils'],
+    compression: 'gzip',
+    fpm: ['--rpm-rpmbuild-define', '_rpmformat 4', '--rpm-rpmbuild-define', '_smp_build_ncpus 2', '--rpm-compression-level', '1', '--log', 'info'],
+    depends: ['gtk3', 'nss', 'libXScrnSaver', 'libXtst', 'libdrm', 'mesa-libgbm', 'alsa-lib', 'at-spi2-core', 'xdg-utils', 'python3', 'polkit', 'dnf'],
   },
   publish: null,
 }
