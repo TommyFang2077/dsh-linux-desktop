@@ -78,6 +78,50 @@ test('Linux removes the native application menu instead of hiding its labels', (
   assert.equal(menu, null)
 })
 
+test('normal, selected and candidate Linux Hosts use the Node from their own payload', async () => {
+  const main = readFileSync(new URL('../build/upstream/apps/desktop/src/main.ts', import.meta.url), 'utf8')
+  const resourcesSource = main.slice(main.indexOf('async function runtimeResources('), main.indexOf('/** Check a candidate Host'))
+  const probeSource = main.slice(main.indexOf('async function probeWorkbenchKernel('), main.indexOf('function developmentPrimaryRuntime('))
+  assert.ok(resourcesSource && probeSource)
+  const calls = []
+  const context = {
+    join, dirname: path => join(path, '..'), AbortController, URL, setTimeout, clearTimeout,
+    process: { execPath: '/shell/electron', resourcesPath: '/bundled/resources', platform: 'linux', env: {} },
+    app: { isPackaged: true, getAppPath: () => '/bundled/app', getPath: () => '/tmp' },
+    selectedKernel: undefined,
+    developmentPrimaryRuntime: () => '/development/primary-runtime',
+    resolveDesktopHostNode: async (primary, electron) => {
+      assert.equal(electron, '/shell/electron')
+      calls.push(primary)
+      return join(primary, 'dependencies/node/bin/node')
+    },
+    readDesktopRuntime: () => ({ release: { version: '1.0.0' } }),
+    mkdtemp: async () => '/isolated/probe', rm: async () => {},
+    resolveDesktopPaths: home => ({ profile: join(home, 'profiles/desktop') }),
+    DesktopProjectManager: class { async applyRelease() {} },
+    DesktopHostUncleanExitError: class extends Error {},
+    DesktopHostProcess: class {
+      constructor(node, _dsh, _profile, _inspect, _environment, _failure, primary) {
+        assert.equal(node, join('/candidate/runtime/primary-runtime', 'dependencies/node/bin/node'))
+        assert.equal(primary, '/candidate/runtime/primary-runtime')
+      }
+      async start() { return { url: 'http://127.0.0.1:3080/', injections: [] } }
+      async stop(graceful) { assert.equal(graceful, true) }
+    },
+    fetch: async () => ({ ok: true, headers: { getSetCookie: () => [], get: () => 'text/html' } }),
+  }
+  const resources = runInNewContext(stripTypeScriptTypes(`${resourcesSource}; runtimeResources`), context)
+  assert.equal((await resources()).node, '/bundled/resources/runtime/primary-runtime/dependencies/node/bin/node')
+  context.app.isPackaged = false
+  assert.equal((await resources()).node, '/development/primary-runtime/dependencies/node/bin/node')
+  context.selectedKernel = { dsh: '/selected/dsh', runtime: '/selected/runtime' }
+  assert.equal((await resources()).node, '/selected/runtime/primary-runtime/dependencies/node/bin/node')
+  const probe = runInNewContext(stripTypeScriptTypes(`${probeSource}; probeWorkbenchKernel`), context)
+  await probe({ dsh: '/candidate/dsh', runtime: '/candidate/runtime' })
+  assert.deepEqual(calls, ['/bundled/resources/runtime/primary-runtime', '/development/primary-runtime',
+    '/selected/runtime/primary-runtime', '/candidate/runtime/primary-runtime'])
+})
+
 test('packaged modes reject group/other writes without following symlinks', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'dsh-permissions-'))
   try {

@@ -264,6 +264,69 @@ test('desktop update uses a different signed channel and never writes kernel poi
   await assert.rejects(f.manager.check('desktop'), /不支持当前内核/)
 })
 
+test('GitHub Releases feeds and assets follow bounded redirects without bypassing signature or hash checks', async t => {
+  const f = await fixture(t)
+  const base = 'https://github.com/owner/repository/releases/'
+  const feed = `${base}latest/download/desktop-latest.json`
+  const taggedFeed = `${base}download/v1.2.0/desktop-latest.json`
+  const bytes = Buffer.from('verified GitHub desktop installer')
+  const asset = { url: `${base}download/v1.2.0/desktop.deb`, size: bytes.length, sha256: sha(bytes) }
+  const release = { ...f.release, channel: 'desktop', version: '1.2.0', nodeVersion: '24.18.1',
+    kernelRange: '>=1 <2', assets: { deb: asset, rpm: asset } }
+  f.options.config.desktop.url = feed
+  const replies = new Map([
+    [feed, { location: taggedFeed }],
+    [taggedFeed, { location: 'https://release-assets.githubusercontent.com/feed' }],
+    ['https://release-assets.githubusercontent.com/feed', { body: JSON.stringify(signed(release)) }],
+    [asset.url, { location: 'https://release-assets.githubusercontent.com/installer' }],
+    ['https://release-assets.githubusercontent.com/installer', { body: bytes }],
+  ])
+  f.manager.fetch = async (url, options) => {
+    assert.equal(options.redirect, url.startsWith(base) ? 'manual' : 'error')
+    const reply = replies.get(url)
+    assert.ok(reply, `unexpected URL: ${url}`)
+    return reply.location ? new Response(null, { status: 302, headers: { location: reply.location } }) : new Response(reply.body)
+  }
+  await f.manager.check('desktop')
+  assert.equal(f.manager.status().desktop.available, '1.2.0')
+  await f.manager.installDesktop('deb', async () => true, async args => {
+    assert.deepEqual(await fs.readFile(args.path), bytes)
+  }, () => {})
+  assert.equal(f.manager.state.active, null)
+  replies.set('https://release-assets.githubusercontent.com/feed', { body: JSON.stringify(signed(release, generateKeyPairSync('ed25519').privateKey)) })
+  await assert.rejects(f.manager.check('desktop'), /签名/)
+  assert.equal(f.manager.status().desktop.available, null)
+})
+
+test('GitHub download redirects reject other repositories, hosts, insecure URLs and loops', async t => {
+  const f = await fixture(t)
+  const source = 'https://github.com/owner/repository/releases/latest/download/desktop-latest.json'
+  for (const target of [
+    'https://github.com/other/repository/releases/download/v1/desktop-latest.json',
+    'https://github.com/owner/repository/releases/download/v1/other.json',
+    'https://github.com/owner/repository/issues',
+    'https://untrusted.test/installer',
+    'https://release-assets.githubusercontent.com.untrusted.test/installer',
+    'http://release-assets.githubusercontent.com/installer',
+    'https://user:password@release-assets.githubusercontent.com/installer',
+    source,
+  ]) {
+    let requests = 0
+    f.manager.fetch = async (_url, options) => {
+      assert.equal(options.redirect, 'manual')
+      requests++
+      return new Response(null, { status: 302, headers: { location: target } })
+    }
+    await assert.rejects(f.manager.response(source), /HTTPS|重定向/)
+    assert.ok(requests <= 4, 'redirect loops must be bounded')
+  }
+  f.manager.fetch = async (_url, options) => {
+    assert.equal(options.redirect, 'error')
+    return new Response(null, { status: 302, headers: { location: 'https://untrusted.test/installer' } })
+  }
+  await assert.rejects(f.manager.response('https://updates.test/release.json'), /重定向/)
+})
+
 test('desktop authorization/installer failure preserves kernel state and cleans the download', async t => {
   const f = await fixture(t)
   const bytes = Buffer.from('installer')

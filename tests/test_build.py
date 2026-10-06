@@ -75,6 +75,24 @@ class BuildTests(unittest.TestCase):
                 build.verify()
             self.assertTrue((build.DIST / "SHA256SUMS").exists())
 
+    def test_bundle_checks_primary_host_node_instead_of_electron_node(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)
+            prepared = app / ".desktop-build/targets/linux-x64"
+            (prepared / "dsh").mkdir(parents=True)
+            (prepared / "runtime/primary-runtime").mkdir(parents=True)
+            (prepared / "dsh/desktop-runtime.json").write_text('{"release":{"hostProtocolVersion":4}}')
+            (prepared / "runtime/primary-runtime/runtime.json").write_text('{"node":"24.21.0"}')
+            (prepared / "runtime/versions.json").write_text('{"node":"24.18.1"}')
+            with patch.object(build, "APP", app), patch.object(build, "run"), patch.object(
+                build.tempfile, "TemporaryDirectory", side_effect=RuntimeError("staging reached")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "staging reached"):
+                    build.bundle()
+                (prepared / "runtime/primary-runtime/runtime.json").write_text('{"node":"24.18.1"}')
+                with self.assertRaisesRegex(RuntimeError, "compatibility metadata differs"):
+                    build.bundle()
+
     def test_source_is_pinned_not_a_moving_branch(self):
         self.assertRegex(build.LOCK["commit"], r"^[0-9a-f]{40}$")
         self.assertEqual(build.LOCK["repository"], "https://github.com/deepseek-ai/deepseek-harness.git")

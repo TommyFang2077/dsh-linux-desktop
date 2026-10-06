@@ -14,7 +14,9 @@
 
 ## 配置独立发布源
 
-仓库的 `updates.json` 默认两个通道均为 `null`。没有已部署的更新服务和受信任公钥时，界面明确显示“未配置”，不会连接 DeepSeek 官方更新渠道，也不会静默信任从服务器返回的新密钥。
+仓库的 `updates.json` 已固定两个 GitHub 更新清单地址与 Ed25519 公钥：清单来自本仓库的 `update-feed` 分支，安装包来自版本化 GitHub Releases。首次发布成功前，地址尚无清单，不能声称更新源已上线。旧安装包仍使用打包时的配置，不会自动读取源码目录的配置。未配置的私有部署仍可将通道设为 `null`；应用不会静默信任从服务器返回的新密钥。
+
+“官方内核”指复用 `upstream.json` 固定的官方源码进行 Linux 适配，由本项目构建、签名分发，不是官方托管的 Linux 更新服务。目前核实的官方更新通道仅提供 macOS/Windows 完整桌面包，不能直接当成这里的独立 Linux 内核包；仅安装 npm 的 dsh 也不包含完整桌面私有 Host 与配套运行时。
 
 发布者为两个通道分别配置 HTTPS feed URL 和 Ed25519 公钥，可共用或分开密钥：
 
@@ -33,7 +35,7 @@
 
 这是格式示例，域名和密钥不是可用的发布源。正式发行前编辑根目录 `updates.json` 并重新打包。受控测试或私有部署也可将 `DSH_WORKBENCH_UPDATE_CONFIG` 设置为本机配置文件的绝对路径；**更换该文件的公钥就是更换信任来源**，只能使用自己信任的发布者。已安装用户内核的启动校验仍需要保留对应通道的可信公钥。
 
-feed 和文件必须使用无 URL 凭据的 HTTPS；不接受重定向。代理/CDN 应提供最终下载地址。下载有超时、大小限制，归档拒绝绝对/穿越路径、软硬链接、设备和重复文件，并限制解包数量、总大小及压缩比。预检查与实际抽取都会验证每个归档条目；解包在限制堆内存的独立 Node 进程中同步完成，避免大量待写文件占用桌面进程内存。子进程失败不改变活跃内核。两套更新均拒绝低于当前版本的候选。
+feed 和文件必须使用无 URL 凭据的 HTTPS。GitHub Releases 的下载地址允许最多三次受限重定向：只能转向同仓库、同文件名的 Release 下载地址或 `release-assets.githubusercontent.com`，到达 CDN 后不再接受重定向；签名与摘要校验不变。其他更新源不接受重定向，代理/CDN 应提供最终下载地址。下载有超时、大小限制，归档拒绝绝对/穿越路径、软硬链接、设备和重复文件，并限制解包数量、总大小及压缩比。预检查与实际抽取都会验证每个归档条目；解包在限制堆内存的独立 Node 进程中同步完成，避免大量待写文件占用桌面进程内存。子进程失败不改变活跃内核。两套更新均拒绝低于当前版本的候选。
 
 ## 构建并签名更新文件
 
@@ -62,6 +64,23 @@ node build/release-updates.mjs desktop \
 工具只生成本地文件，不上传、不创建 Git tag、不推送。已有同名签名输出会拒绝覆盖。内核包包括 `kernel.json` 全量文件清单和 `dsh/`、`runtime/` 两棵目录；私有 Host 使用官方 descriptor 再验一次，支持运行时也由全量清单覆盖。由于需要匹配 Host 和 WebUI，不能把任意 npm `latest` 直接装到活跃内核目录。
 
 签名封装为 `{ "payload": "<base64 JSON>", "signature": "<base64 Ed25519>" }`，签名覆盖 payload 原始字节。payload 含版本、通道、平台、架构、Host 协议、`dataEpoch`、桌面/Node 兼容范围，以及文件大小和 SHA-256；内核还含清单摘要，桌面还含目标 Electron Node 版本及支持的内核范围。未通过签名校验的版本号、下载地址和兼容信息不参与安装决定。
+
+## GitHub Actions 构建与发布
+
+`.github/workflows/linux-updates.yml` 在推送 `main` 或手动触发时，复用 `make prepare → make test → make package`，只保存 Actions artifact，不发布。未配置签名 Secret 时仅生成 deb/rpm，明确跳过签名；配置后才生成完整 Linux 内核包及两个签名清单。缺少 Secret 的标签发布会在构建前被拒绝，不能发布未签名的更新源。私钥只传入签名步骤，写入 runner 私有临时文件，匹配 `updates.json` 中的公钥后才签名，并在步骤结束时删除；不会进入软件包或 artifact。
+
+仓库管理员需要在 GitHub Actions Secrets 中配置 **`DSH_WORKBENCH_UPDATE_SIGNING_KEY`**，值为仓库外保存的 Ed25519 PEM 私钥。不要更换已有生产密钥来修复配置问题；更换公钥会改变用户信任来源，也会影响既有用户内核的启动校验。私钥必须离线备份，不能提交到 Git。首次配置可经批准后使用下列命令，命令不会显示私钥：
+
+```sh
+gh secret set DSH_WORKBENCH_UPDATE_SIGNING_KEY \
+  --repo TommyFang2077/dsh-linux-desktop < /secure/location/update-signing.pem
+```
+
+仅用户明确推送 **`workbench-v<desktop.json 的 version>`** 标签时，才执行发布作业；本地脚本和普通 `main` 推送不自动创建标签。发布顺序是：通过全部构建与校验 → 创建不覆盖旧资产的 GitHub Release → 一次提交更新 `update-feed` 分支的两个清单。只有发布作业有 `contents: write` 权限；不强推分支、不覆盖同名 Release。预发布版本也使用固定 raw 清单地址，不依赖 GitHub 的 `releases/latest`（它排除预发布版本）。
+
+更新官方版本时，先修改 `upstream.json` 的固定提交与版本，并验证协议、配套 WebUI/Host、Node 与数据格式兼容性；不能自动追踪未经验证的 npm `latest`。桌面版本单独修改 `desktop.json`，标签版本必须匹配。只有确认数据格式双向兼容后才能沿用 `dataEpoch`。
+
+首次发布需单独授权上传生产密钥、推送源码与标签及对外发布。发布成功后再为旧安装包设置 `DSH_WORKBENCH_UPDATE_CONFIG` 或重新打包安装，并验证真实下载与签名；不能把“本地工作流校验通过”当成“更新源已上线”。
 
 ## 验证
 

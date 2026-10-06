@@ -191,6 +191,127 @@ index 1b88f09..1b5c501 100644
    if (macosMinimumVersion !== undefined) prepareCommandLink(join(RUNTIME_ROOT, 'cli'), arch, macosMinimumVersion)
    cpSync(join(import.meta.dirname, '..', 'lib', 'command-manager-entry.js'), join(RUNTIME_ROOT, 'cli', 'command-manager.js'))
    cpSync(join(import.meta.dirname, 'command-path.ps1'), join(RUNTIME_ROOT, 'cli', 'command-path.ps1'))
+diff --git a/apps/desktop/scripts/smoke-prepared-runtime.ts b/apps/desktop/scripts/smoke-prepared-runtime.ts
+index 697f527..dac5f29 100644
+--- a/apps/desktop/scripts/smoke-prepared-runtime.ts
++++ b/apps/desktop/scripts/smoke-prepared-runtime.ts
+@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
+ import { join, resolve } from 'node:path'
+ import { promisify } from 'node:util'
+ import { runtimeArchivePath } from '../../desktop-host/src/office-engine.ts'
+-import { desktopNodeEnvironment } from '../src/node-environment.ts'
++import { desktopNodeEnvironment, resolveDesktopHostNode } from '../src/node-environment.ts'
+ import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+ import { scrubWindowsSigningEnvironment } from './windows-sign.mjs'
+ import { smokeDesktopRuntime } from './smoke-runtime.ts'
+@@ -22,6 +22,7 @@ import { verifyRuntimeArchive } from './verify-runtime-archive.ts'
+ export async function smokePreparedRuntime(
+   root: string, node: string, resourcesRuntime: string, descriptor: DesktopRuntimeDescriptor,
+ ): Promise<void> {
++  node = await resolveDesktopHostNode(join(resourcesRuntime, 'primary-runtime'), node, descriptor.platform)
+   const cache = await mkdtemp(join(tmpdir(), 'desktop-native-smoke-'))
+   const environment = { ...scrubWindowsSigningEnvironment(process.env), NODE_OPTIONS: '',
+     NARB_NATIVE_CACHE_DIR: cache, NARB_DISABLE_NATIVE_CACHE: '0' }
+diff --git a/apps/desktop/scripts/smoke-runtime.ts b/apps/desktop/scripts/smoke-runtime.ts
+index f15f10a..11d3d28 100644
+--- a/apps/desktop/scripts/smoke-runtime.ts
++++ b/apps/desktop/scripts/smoke-runtime.ts
+@@ -1,5 +1,6 @@
+ /** Boot the materialized target runtime without access to a user's Harness profile. */
+ 
++import assert from 'node:assert/strict'
+ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+@@ -8,6 +9,7 @@ import { promisify } from 'node:util'
+ import { fileURLToPath } from 'node:url'
+ import { readPrimaryRuntime, workspaceDependencyPaths } from '../../../packages/skill/tool-workspace-dependencies/src/index.ts'
+ import { DesktopHostProcess } from '../src/host-process.ts'
++import { resolveDesktopHostNode } from '../src/node-environment.ts'
+ import { createPluginProfile } from '../src/project-manager.ts'
+ import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+ 
+@@ -23,6 +25,7 @@ import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+ export async function smokeDesktopRuntime(
+   root: string, node: string, runtime: DesktopRuntimeDescriptor, environment: NodeJS.ProcessEnv, resourcesRuntime: string,
+ ): Promise<void> {
++  node = await resolveDesktopHostNode(join(resourcesRuntime, 'primary-runtime'), node, runtime.platform)
+   const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-smoke-'))
+   const profile = join(home, 'profiles', 'desktop')
+   const host = new DesktopHostProcess(node, root, profile, undefined, { ...environment, DSH_HOME: home },
+@@ -52,10 +55,32 @@ import { Context } from '@deepseek-ai/cordis'
+ import { inspect, promisify } from 'node:util'
+ import { execFile } from 'node:child_process'
+ import { readFile } from 'node:fs/promises'
++import { createRequire } from 'node:module'
++import assert from 'node:assert/strict'
++const requireRuntime = createRequire(${JSON.stringify(join(root, 'package.json'))})
+ export function apply(ctx) {
+   if (!(ctx instanceof Context)) throw new Error('desktop runtime: external plugin loaded another Cordis instance')
+   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke',
+     handler(_request, response) { response.end('plugin route ready') } }))
++  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke-sharp',
++    async handler(_request, response) {
++      try {
++        const sharp = requireRuntime('sharp')
++        const pixel = Buffer.from([17, 103, 231])
++        const png = await sharp(pixel, { raw: { width: 1, height: 1, channels: 3 } }).png().toBuffer()
++        for (let index = 0; index < 100; index++) {
++          const resized = await sharp(png).resize(2, 2).raw().toBuffer({ resolveWithObject: true })
++          assert.equal(resized.info.width, 2)
++          assert.equal(resized.info.height, 2)
++          assert.deepEqual(resized.data, Buffer.concat([pixel, pixel, pixel, pixel]))
++        }
++        response.end(JSON.stringify({ node: process.versions.node, executable: process.execPath,
++          electron: process.versions.electron ?? null, resizes: 100 }))
++      } catch (error) {
++        response.statusCode = 500
++        response.end(inspect(error, { depth: 5 }))
++      }
++    } }))
+   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke-office-cli',
+     async handler(_request, response) {
+       try {
+@@ -111,6 +136,16 @@ export function apply(ctx) {
+     }
+     const pluginResponse = await fetch(new URL('/desktop-smoke', ready.url), { headers: { cookie } })
+     if (await pluginResponse.text() !== 'plugin route ready') throw new Error('desktop runtime: plugin HTTP route failed')
++    const resized = await fetch(new URL('/desktop-smoke-sharp', ready.url), {
++      headers: { cookie }, signal: AbortSignal.timeout(30_000),
++    })
++    if (!resized.ok) throw new Error(`desktop runtime: sharp resize failed: ${await resized.text()}`)
++    const resizeResult = await resized.json()
++    if (runtime.platform === 'linux') {
++      assert.deepEqual(resizeResult, { node: (await readPrimaryRuntime(primary)).node,
++        executable: dependencies.node, electron: null, resizes: 100 })
++    }
++    console.log('desktop runtime: Host sharp 1x1 -> 2x2 resize passed (100 iterations)', resizeResult)
+     for (const { extension } of inputs) {
+       const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
+         headers: { cookie }, signal: AbortSignal.timeout(120_000),
+@@ -133,7 +168,7 @@ export function apply(ctx) {
+     console.log('desktop runtime: DOCX, XLSX, PPTX to PDF and skill CLI discovery passed')
+   } finally {
+     clearTimeout(timer)
+-    await host.stop()
+-    rmSync(home, { recursive: true, force: true })
++    try { await host.stop(true) }
++    finally { rmSync(home, { recursive: true, force: true }) }
+   }
+ }
+diff --git a/apps/desktop/src/host-process.ts b/apps/desktop/src/host-process.ts
+index 948a88e..eb86da7 100644
+--- a/apps/desktop/src/host-process.ts
++++ b/apps/desktop/src/host-process.ts
+@@ -155,7 +155,7 @@ export class DesktopHostProcess {
+   }>()
+ 
+   /**
+-   * @param node - Absolute Electron executable in Node mode.
++   * @param node - Absolute standalone Node executable, or Electron executable in Node mode.
+    * @param runtimeDir - Immutable packages carried by the current application.
+    * @param projectDir - Desktop plugin profile and child working directory.
+    * @param inspectPort - Optional loopback inspector port for workspace development.
 diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
 index fc19021..ebfdfb0 100644
 --- a/apps/desktop/src/ipc.ts
@@ -328,7 +449,7 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..10c6fbf 100644
+index b4b8153..0fb5ee1 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -342,7 +463,15 @@ index b4b8153..10c6fbf 100644
  import { fileURLToPath } from 'node:url'
  import {
    app,
-@@ -52,7 +52,7 @@ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.t
+@@ -29,6 +29,7 @@ import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-vi
+ import { installDesktopDirectoryPicker } from './directory-picker.ts'
+ import { installMicrophonePermissions } from './microphone-permissions.ts'
+ import { DesktopBackendController } from './backend-controller.ts'
++import { resolveDesktopHostNode } from './node-environment.ts'
+ import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
+ import { readDeviceInfo } from './device-info.ts'
+ import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
+@@ -52,7 +53,7 @@ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.t
  import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
  import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
  import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
@@ -351,10 +480,20 @@ index b4b8153..10c6fbf 100644
  import { DesktopBrowserGuests } from './browser-guests.ts'
  import { installDesktopShortcuts } from './keyboard.ts'
  import { DesktopUpdateOverlays } from './update-overlay.ts'
-@@ -148,7 +148,43 @@ interface RuntimeResources {
+@@ -95,7 +96,7 @@ const recovery = new DesktopFatalRecovery({
+   show: options => dialog.showMessageBox(options),
+   stop: () => { shuttingDown = true; return stopForRecovery() },
+   disablePlugins: async () => {
+-    const manager = new DesktopProjectManager(resolveDesktopPaths(), runtimeResources())
++    const manager = new DesktopProjectManager(resolveDesktopPaths(), await runtimeResources())
+     const backupPath = await manager.disableAllPlugins()
+     console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
+   },
+@@ -148,9 +149,46 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
+-function runtimeResources(): RuntimeResources {
 +interface WorkbenchKernel {
 +  readonly dsh: string
 +  readonly runtime: string
@@ -385,23 +524,28 @@ index b4b8153..10c6fbf 100644
 +
 +let selectedKernel: WorkbenchKernel | undefined
 +
- function runtimeResources(): RuntimeResources {
++async function runtimeResources(): Promise<RuntimeResources> {
 +  if (selectedKernel !== undefined) return {
-+    node: process.execPath,
++    node: await resolveDesktopHostNode(join(selectedKernel.runtime, 'primary-runtime'), process.execPath),
 +    nodeBin: join(selectedKernel.runtime, 'bin'),
 +    pnpm: join(selectedKernel.runtime, 'pnpm', 'bin', 'pnpm.mjs'),
 +    dsh: selectedKernel.dsh,
 +  }
    const development = !app.isPackaged
-   const node = process.execPath
+-  const node = process.execPath
++  const node = await resolveDesktopHostNode(development
++    ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime'), process.execPath)
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
-@@ -160,6 +196,61 @@ function runtimeResources(): RuntimeResources {
+   const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
+     ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
+@@ -160,6 +198,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
 +/** Check a candidate Host and WebUI without reading the user's profile or credentials. */
 +async function probeWorkbenchKernel(kernel: { dsh: string; runtime: string }): Promise<void> {
 +  const version = readDesktopRuntime(kernel.dsh).release.version
++  const node = await resolveDesktopHostNode(join(kernel.runtime, 'primary-runtime'), process.execPath)
 +  const temporary = await mkdtemp(join(app.getPath('temp'), 'dsh-workbench-probe-'))
 +  const home = join(temporary, 'dsh')
 +  const paths = resolveDesktopPaths(home)
@@ -416,7 +560,7 @@ index b4b8153..10c6fbf 100644
 +    TMPDIR: temporary,
 +    DSH_CLIENT_VERSION: version,
 +  }
-+  const host = new DesktopHostProcess(process.execPath, kernel.dsh, paths.profile, undefined, environment,
++  const host = new DesktopHostProcess(node, kernel.dsh, paths.profile, undefined, environment,
 +    undefined, join(kernel.runtime, 'primary-runtime'), {
 +      pnpm: join(kernel.runtime, 'pnpm', 'bin', 'pnpm.mjs'), nodeBin: join(kernel.runtime, 'bin'),
 +    })
@@ -457,11 +601,16 @@ index b4b8153..10c6fbf 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -316,12 +407,32 @@ async function main(): Promise<void> {
+@@ -316,12 +410,32 @@ async function main(): Promise<void> {
    void pruneCrashReports(app.getPath('logs'))
    const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
    const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
-+  const development = !app.isPackaged
+-  const resources = runtimeResources()
+-  const paths = resolveDesktopPaths()
+   const development = !app.isPackaged
+-  const primaryRuntime = development
+-    ? developmentPrimaryRuntime()
+-    : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +  let workbench: WorkbenchUpdates | undefined
 +  if (process.platform === 'linux' && app.isPackaged) {
 +    // This independently emitted ESM module is a downstream packaging interface, not an upstream workspace import.
@@ -481,12 +630,8 @@ index b4b8153..10c6fbf 100644
 +    })
 +    selectedKernel = workbench.selected
 +  }
-   const resources = runtimeResources()
-   const paths = resolveDesktopPaths()
--  const development = !app.isPackaged
--  const primaryRuntime = development
--    ? developmentPrimaryRuntime()
--    : join(process.resourcesPath, 'runtime', 'primary-runtime')
++  const resources = await runtimeResources()
++  const paths = resolveDesktopPaths()
 +  let primaryRuntime = selectedKernel === undefined
 +    ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +    : join(selectedKernel.runtime, 'primary-runtime')
@@ -494,7 +639,7 @@ index b4b8153..10c6fbf 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -508,8 +619,9 @@ async function main(): Promise<void> {
+@@ -508,8 +622,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -506,14 +651,14 @@ index b4b8153..10c6fbf 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -564,77 +676,120 @@ async function main(): Promise<void> {
+@@ -564,77 +679,120 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
-+  const selectWorkbenchResources = (): void => {
++  const selectWorkbenchResources = async (): Promise<void> => {
 +    if (workbench === undefined) return
 +    selectedKernel = workbench.selected
-+    Object.assign(resources, runtimeResources())
++    Object.assign(resources, await runtimeResources())
 +    primaryRuntime = join(selectedKernel.runtime, 'primary-runtime')
 +  }
    const reconcileBackend = (): Promise<void> => {
@@ -542,7 +687,7 @@ index b4b8153..10c6fbf 100644
 +      catch (error) {
 +        if (quitting || workbench === undefined || !await workbench.rollback()) throw error
 +        await backend.stop()
-+        selectWorkbenchResources()
++        await selectWorkbenchResources()
 +        hostUrl = undefined
 +        hostCookie = undefined
 +        injections = []
@@ -568,7 +713,7 @@ index b4b8153..10c6fbf 100644
 +    if (quitting || backend.host !== undefined) return
 +    workbenchStartup = workbench !== undefined
 +    await backend.stop()
-+    selectWorkbenchResources()
++    await selectWorkbenchResources()
 +    navigation = undefined
 +    await reconcileBackend()
 +  }
@@ -684,7 +829,7 @@ index b4b8153..10c6fbf 100644
    )
  
    const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -925,7 +1080,7 @@ async function main(): Promise<void> {
+@@ -925,7 +1083,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -693,7 +838,7 @@ index b4b8153..10c6fbf 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -952,7 +1107,10 @@ async function main(): Promise<void> {
+@@ -952,7 +1110,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -705,7 +850,7 @@ index b4b8153..10c6fbf 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -974,15 +1132,16 @@ async function main(): Promise<void> {
+@@ -974,15 +1135,16 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -725,7 +870,7 @@ index b4b8153..10c6fbf 100644
      // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
      try {
        tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
-@@ -1225,7 +1384,9 @@ async function main(): Promise<void> {
+@@ -1225,7 +1387,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -736,6 +881,43 @@ index b4b8153..10c6fbf 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+diff --git a/apps/desktop/src/node-environment.ts b/apps/desktop/src/node-environment.ts
+index 680b439..0d9732f 100644
+--- a/apps/desktop/src/node-environment.ts
++++ b/apps/desktop/src/node-environment.ts
+@@ -1,10 +1,28 @@
+-/** Electron Node-mode startup, with private shell launchers scoped to package installation. */
++/** Desktop Host runtime selection and private package-installation launchers. */
+ 
+-import { delimiter } from 'node:path'
++import { constants } from 'node:fs'
++import { access } from 'node:fs/promises'
++import { delimiter, join } from 'node:path'
+ 
+ /**
+- * Select Electron's Node mode and the shell launcher used by package scripts.
+- * @param executable - Electron executable running the application.
++ * Use the selected payload's standalone Node on Linux, preserving Electron Node-mode elsewhere.
++ * @param primaryRuntime - Selected kernel's bundled dependency payload.
++ * @param electron - Desktop shell executable.
++ * @param platform - Target platform.
++ * @returns Host executable; missing or non-executable Linux Node files reject without fallback.
++ */
++export async function resolveDesktopHostNode(
++  primaryRuntime: string, electron: string, platform: NodeJS.Platform = process.platform,
++): Promise<string> {
++  if (platform !== 'linux') return electron
++  const node = join(primaryRuntime, 'dependencies', 'node', 'bin', 'node')
++  await access(node, constants.X_OK)
++  return node
++}
++
++/**
++ * Configure the shell launcher; ELECTRON_RUN_AS_NODE is ignored by standalone Node.
++ * @param executable - Selected Node executable, or Electron executable in Node mode.
+  * @param bin - Directory containing the node shell launcher.
+  * @param environment - Caller environment preserved for plugin execution.
+  * @returns Environment for a Node-mode child process.
 diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
 index f590b8b..31d8c37 100644
 --- a/apps/desktop/src/preload-app.ts
@@ -766,6 +948,102 @@ index b2ce416..b462f28 100644
    readonly iconPath: string
    readonly locale: () => DesktopLocale
    /** Show and focus the primary window. */
+diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
+index d0d7bb9..41faa39 100644
+--- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
++++ b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
+@@ -1,4 +1,4 @@
+-/** Exercise filtered Desktop native and HTML dependencies under its Electron Node runtime. */
++/** Exercise filtered Desktop native and HTML dependencies under its selected Host runtime. */
+ 
+ import assert from 'node:assert/strict'
+ import { execFileSync } from 'node:child_process'
+@@ -13,10 +13,18 @@ const runtime = process.argv[2]
+ assert.ok(runtime, 'Pass the filtered resources/dsh directory')
+ const root = resolve(runtime)
+ const descriptor = JSON.parse(readFileSync(join(root, 'desktop-runtime.json'), 'utf8'))
+-assert.equal(process.versions.node, descriptor.release.nodeVersion, 'Run with the Electron Node runtime version')
+ assert.equal(process.platform, descriptor.platform)
+ assert.equal(process.arch, descriptor.arch)
+ const resourcesRuntime = process.argv[3] ?? join(dirname(root), 'runtime')
++const standalone = descriptor.platform === 'linux'
++const nodeVersion = standalone
++  ? JSON.parse(readFileSync(join(resourcesRuntime, 'primary-runtime', 'runtime.json'), 'utf8')).node
++  : descriptor.release.nodeVersion
++assert.equal(process.versions.node, nodeVersion, 'Run with the selected Host Node runtime version')
++if (standalone) {
++  assert.equal(process.versions.electron, undefined)
++  assert.equal(process.execPath, join(resourcesRuntime, 'primary-runtime', 'dependencies', 'node', 'bin', 'node'))
++}
+ const requireRuntime = createRequire(join(root, 'package.json'))
+ const scratch = mkdtempSync(join(tmpdir(), 'dsh-runtime-payload-'))
+ 
+@@ -30,7 +38,7 @@ function checkPnpm() {
+   writeFileSync(join(scratch, 'check.cjs'), `
+ const assert = require('node:assert/strict')
+ assert.equal(process.execPath, ${JSON.stringify(process.execPath)})
+-assert.ok(process.versions.electron)
++assert.equal(process.versions.electron, ${JSON.stringify(process.versions.electron)})
+ assert.ok(process.execArgv.includes('--expose-internals'))
+ assert.equal(typeof require('internal/modules/esm/loader').getOrInitializeCascadedLoader, 'function')
+ console.log('desktop-node-script-ok')
+@@ -128,7 +136,7 @@ function checkKoffi() {
+   }
+ }
+ 
+-/** Encode and decode a pixel through the packaged libvips binary. */
++/** Encode, decode and resize a pixel through the packaged libvips binary. */
+ async function checkSharp() {
+   const sharp = requireRuntime('sharp')
+   const pixel = Buffer.from([17, 103, 231])
+@@ -138,6 +146,12 @@ async function checkSharp() {
+   assert.equal(decoded.info.height, 1)
+   assert.equal(decoded.info.channels, 3)
+   assert.deepEqual(decoded.data, pixel)
++  for (let index = 0; index < 100; index++) {
++    const resized = await sharp(png).resize(2, 2).raw().toBuffer({ resolveWithObject: true })
++    assert.equal(resized.info.width, 2)
++    assert.equal(resized.info.height, 2)
++    assert.deepEqual(resized.data, Buffer.concat([pixel, pixel, pixel, pixel]))
++  }
+ }
+ 
+ /** Exercise Domino parsing through the HTML converter and GFM plugin used by web_fetch. */
+diff --git a/apps/desktop/tests/node-environment.spec.ts b/apps/desktop/tests/node-environment.spec.ts
+index 5050e4f..d9ed00e 100644
+--- a/apps/desktop/tests/node-environment.spec.ts
++++ b/apps/desktop/tests/node-environment.spec.ts
+@@ -1,6 +1,28 @@
+-import { delimiter } from 'node:path'
++import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { delimiter, join } from 'node:path'
+ import { expect, it } from 'vitest'
+-import { desktopNodeEnvironment } from '../src/node-environment.ts'
++import { desktopNodeEnvironment, resolveDesktopHostNode } from '../src/node-environment.ts'
++
++it.skipIf(process.platform !== 'linux')('uses the selected payload Node and rejects missing Node without falling back to Electron', async () => {
++  const root = mkdtempSync(join(tmpdir(), 'desktop-host-node-'))
++  const node = join(root, 'dependencies', 'node', 'bin', 'node')
++  try {
++    mkdirSync(join(root, 'dependencies', 'node', 'bin'), { recursive: true })
++    writeFileSync(node, '', { mode: 0o755 })
++    await expect(resolveDesktopHostNode(root, '/desktop/electron', 'linux')).resolves.toBe(node)
++    chmodSync(node, 0o644)
++    await expect(resolveDesktopHostNode(root, '/desktop/electron', 'linux')).rejects.toThrow('EACCES')
++    rmSync(node)
++    await expect(resolveDesktopHostNode(root, '/desktop/electron', 'linux')).rejects.toThrow('ENOENT')
++  } finally {
++    rmSync(root, { recursive: true, force: true })
++  }
++})
++
++it.each(['darwin', 'win32'] as const)('preserves the Electron backend on %s', async platform => {
++  await expect(resolveDesktopHostNode('/missing-runtime', '/desktop/electron', platform)).resolves.toBe('/desktop/electron')
++})
+ 
+ it('keeps private Desktop launchers out of the Host environment inherited by PTC', () => {
+   const environment = { PATH: '/user/bin', HOME: '/user' }
 diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
 index 11c3a48..dfce9e3 100644
 --- a/apps/desktop/tests/tray.spec.ts
@@ -812,6 +1090,30 @@ index 11c3a48..dfce9e3 100644
    f.tray.dispose()
    f.tray.dispose()
    expect(f.native.destroy).toHaveBeenCalledOnce()
+diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
+index 9848c7f..f0ac5c5 100644
+--- a/apps/desktop/tests/welcome-startup.spec.ts
++++ b/apps/desktop/tests/welcome-startup.spec.ts
+@@ -106,6 +106,10 @@ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
+   ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
+   readDesktopLoginShellEnvironment: async (base: NodeJS.ProcessEnv) => ({ environment: base, failures: [] }),
+ }))
++vi.mock('../src/node-environment.ts', async importOriginal => ({
++  ...await importOriginal<typeof import('../src/node-environment.ts')>(),
++  resolveDesktopHostNode: async (_primary: string, electron: string) => process.platform === 'linux' ? '/runtime/node' : electron,
++}))
+ vi.mock('../src/project-manager.ts', () => ({ DesktopProjectManager: class {
+   applyRelease = vi.fn(async () => {})
+   canRecoverProfile = vi.fn(() => true)
+@@ -261,7 +265,7 @@ it.each([false, true])('starts welcome onboarding without carrying update focus
+   expect(state.menu).toHaveBeenCalledTimes(initialMenus)
+   changed(event, 'en')
+   expect(state.dialogLocale!().id).toBe('en')
+-  expect(state.menu).toHaveBeenCalledTimes(initialMenus + 1)
++  expect(state.menu).toHaveBeenCalledTimes(initialMenus + (process.platform === 'linux' ? 0 : 1))
+   expect(await bootstrap(event)).toEqual({ languages: ['en-US'], preference: 'en' })
+   const welcomeCount = state.beforeWelcome.mock.calls.length
+   state.hasApiKey = true
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 index e3c8cb7..d0cde09 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx

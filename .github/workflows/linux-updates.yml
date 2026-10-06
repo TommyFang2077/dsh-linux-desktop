@@ -1,0 +1,144 @@
+name: dsh-linux-desktop signed updates
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['workbench-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-updates-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.DSH_WORKBENCH_UPDATE_SIGNING_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check release configuration
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag && "$HAS_SIGNING_KEY" != true ]]; then
+            printf '%s\n' 'Configure DSH_WORKBENCH_UPDATE_SIGNING_KEY before publishing signed updates.'
+            exit 1
+          fi
+          if [[ "$HAS_SIGNING_KEY" != true ]]; then printf '%s\n' 'No signing key: build installation packages only, without signed feeds or publication.'; fi
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict'
+          import { createPublicKey } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          const config = JSON.parse(readFileSync('updates.json', 'utf8'))
+          for (const channel of ['kernel', 'desktop']) {
+            assert.equal(config[channel].url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${channel}-latest.json`)
+            assert.equal(createPublicKey(config[channel].publicKey).asymmetricKeyType, 'ed25519')
+          }
+          const { version } = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(process.env.GITHUB_REF_NAME, `workbench-v${version}`)
+          JS
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git python3 rpm dpkg-dev libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
+      - name: Prepare, test and package official Linux sources
+        run: |
+          make prepare
+          make test
+          make package
+      - name: Sign independent kernel and desktop feeds
+        if: env.HAS_SIGNING_KEY == 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.DSH_WORKBENCH_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          key=$(mktemp "$RUNNER_TEMP/workbench-key.XXXXXX")
+          trap 'rm -f "$key"' EXIT
+          chmod 600 "$key"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          unset UPDATE_SIGNING_KEY
+          node --input-type=module - "$key" <<'JS'
+          import assert from 'node:assert/strict'
+          import { createPublicKey } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          const key = createPublicKey(readFileSync(process.argv[2])).export({ type: 'spki', format: 'der' })
+          const config = JSON.parse(readFileSync('updates.json', 'utf8'))
+          for (const channel of ['kernel', 'desktop']) {
+            assert.deepEqual(createPublicKey(config[channel].publicKey).export({ type: 'spki', format: 'der' }), key)
+          }
+          JS
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).version')
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/workbench-v$version/"
+          node build/release-updates.mjs kernel \
+            --input build/upstream/apps/desktop/.desktop-build/targets/linux-x64 \
+            --metadata desktop.json --output dist/kernel-release --key "$key" --base-url "$base"
+          node build/release-updates.mjs desktop \
+            --deb "dist/dsh-workbench-$version-x64.deb" --rpm "dist/dsh-workbench-$version-x64.rpm" \
+            --metadata desktop.json --output dist/desktop-release --key "$key" --base-url "$base"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-updates-${{ github.sha }}
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/dsh-workbench-*-x64.deb
+            dist/dsh-workbench-*-x64.rpm
+            dist/kernel-release/
+            dist/desktop-release/
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/workbench-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: workbench-update-feed
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-updates-${{ github.sha }}
+          path: artifacts
+      - name: Publish immutable release assets before updating feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).version')
+          flags=(--verify-tag --target "$GITHUB_SHA")
+          if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
+            --title "dsh-linux-desktop $version" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
+            artifacts/dsh-workbench-*-x64.deb artifacts/dsh-workbench-*-x64.rpm \
+            artifacts/kernel-release/*.tgz artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json
+          feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")
+          git init --initial-branch=update-feed "$feed"
+          git -C "$feed" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if git -C "$feed" ls-remote --exit-code origin refs/heads/update-feed > /dev/null; then
+            git -C "$feed" fetch --depth=1 origin update-feed
+            git -C "$feed" checkout -B update-feed FETCH_HEAD
+          else
+            code=$?
+            test "$code" = 2
+          fi
+          cp artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json "$feed/"
+          git -C "$feed" config user.name 'github-actions[bot]'
+          git -C "$feed" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$feed" add kernel-latest.json desktop-latest.json
+          if git -C "$feed" diff --cached --quiet; then exit 0; fi
+          git -C "$feed" commit -m "Publish signed update feeds for $RELEASE_TAG"
+          git -C "$feed" -c credential.helper='!gh auth git-credential' push origin HEAD:refs/heads/update-feed

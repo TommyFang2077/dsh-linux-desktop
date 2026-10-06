@@ -236,9 +236,27 @@ export class UpdateManager {
   }
 
   async response(url) {
-    const response = await this.fetch(httpsUrl(url), { redirect: 'error', signal: AbortSignal.timeout(120_000) })
-    if (!response.ok || !response.body) fail(`更新下载失败：HTTP ${response.status}`)
-    return response
+    let address = new URL(httpsUrl(url))
+    const releasePath = /^\/([^/]+\/[^/]+)\/releases\/(?:latest\/download|download\/[^/]+)\/([^/]+)$/
+    const github = address.host === 'github.com' && address.pathname.match(releasePath)
+    const signal = AbortSignal.timeout(120_000)
+    for (let redirects = 0; ; redirects++) {
+      const manual = github && address.host === 'github.com'
+      const response = await this.fetch(address.href, { redirect: manual ? 'manual' : 'error', signal })
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        await response.body?.cancel()
+        const location = response.headers.get('location')
+        if (!manual || redirects >= 3 || !location) fail('更新下载重定向被拒绝或次数超限')
+        const next = new URL(httpsUrl(new URL(location, address).href))
+        const target = next.host === 'github.com' && next.pathname.match(releasePath)
+        if (next.host !== 'release-assets.githubusercontent.com'
+          && !(target && target[1] === github[1] && target[2] === github[2])) fail('更新下载重定向不属于原 GitHub Release')
+        address = next
+        continue
+      }
+      if (!response.ok || !response.body) fail(`更新下载失败：HTTP ${response.status}`)
+      return response
+    }
   }
 
   async check(channel) {

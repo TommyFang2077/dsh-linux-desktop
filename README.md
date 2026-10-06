@@ -1,8 +1,10 @@
-# dsh-workbench
+# dsh-linux-desktop
+
+仓库：[TommyFang2077/dsh-linux-desktop](https://github.com/TommyFang2077/dsh-linux-desktop)。软件包名、可执行文件及既有数据目录保留 `dsh-workbench`，避免影响已安装版本与用户配置。
 
 基于官方 [DeepSeek Harness Desktop](https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/desktop) 的 **非官方 Electron Linux 桌面构建**，提供 x86_64 的 `.deb` 和 `.rpm`。直接复用官方主进程、WebUI、插件管理和 Host，不另写桌面壳。
 
-支持系统托盘、默认应用市场，以及相互独立的内核／桌面更新机制。更新源默认未配置；本项目不连接官方桌面更新渠道，也不属于官方发行版。
+支持系统托盘、默认应用市场，以及相互独立的内核／桌面更新机制。GitHub Actions 为本项目的 Linux 内核包与桌面包生成签名更新源；配置签名 Secret 并首次发布后才能使用。本项目不连接官方 macOS/Windows 桌面更新渠道，也不属于官方发行版。
 
 官方内核源码版本和提交固定在 [`upstream.json`](upstream.json)，桌面版本及兼容范围独立保存在 [`desktop.json`](desktop.json)。当前基线为 `0.2.1-alpha.1` 开发预览版，可能存在破坏性变化。安装前阅读上游 [安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)。
 
@@ -54,15 +56,16 @@ sudo dnf install ./dist/dsh-workbench-0.2.1-alpha.1-x64.rpm
 
 ## Linux 适配范围
 
-- [`patches/linux.patch`](patches/linux.patch) 补充官方准备脚本中的 Linux x64 目标及 Electron 可执行文件路径，保留官方运行时完整性检查、Host 启动和关闭流程。
+- [`patches/linux.patch`](patches/linux.patch) 补充官方准备脚本中的 Linux x64 目标及 Electron 可执行文件路径，保留官方运行时完整性检查、Host 启动和关闭流程。Linux 后端使用所选内核自带的独立 Node（当前基线为 24.21.0），不在 Electron Node 模式中加载 sharp；候选内核探测及失败回滚使用各自对应的 Node。打包检查覆盖 1×1 图片缩放、原生依赖、真实 Host 通信及正常退出，无需新增运行时依赖。
 - [`electron-builder.config.mjs`](electron-builder.config.mjs) 复用官方文件收集与校验钩子，增加 deb/rpm、独立包名、应用 ID、图标及系统依赖。Linux 使用普通应用目录而非 ASAR，避免 Electron 44 将不存在的原生 Office 包误判为已安装，并允许捆绑的 WASM 引擎正常回退、访问实际文件。
 - 使用独立的 `dsh-workbench` 名称和 Electron 配置目录，图标使用固定上游版本的 dsh 图案；`resources/dsh.ico` 提供 16–256px 多尺寸 ICO，Linux 菜单与应用窗口使用同源 512px PNG。
 - Linux 移除窗口顶部「应用 / Edit」菜单栏。系统托盘复用应用 PNG，提供「打开 dsh-workbench」和「退出 dsh-workbench」菜单；关闭主窗口后继续在后台运行，可从托盘或应用图标恢复。桌面环境需支持系统托盘；GNOME 需启用兼容 Electron 新注册格式的 AppIndicator/KStatusNotifierItem 扩展（例如官方 v66，Ubuntu 24.04 自带 v58 不兼容）。安装包不会自动修改桌面扩展。
 - 首次启动在官方管理的 `desktop` profile 中，通过官方插件管理器默认安装 `dshmarket 1.66.8` 应用市场（需要联网）。不强行豁免版本兼容检查；保留用户已有版本，用户之后卸载也不会再次强装。失败不阻塞桌面启动，更新窗口会显示提示，可在插件管理中重试。
 - 不默认安装 TUI、旧 Tauri 语音、ModLens 或预设扩展。当前社区 TUI `0.12.0` 被官方管理器判为不兼容内核 `0.2.1-alpha.1`，因此未强装。Harness 数据仍按官方逻辑存储于 `~/.dsh`，卸载桌面包不删除这些数据。
+- 普通插件安装在用户的 `~/.dsh/profiles/desktop`，不需要写入 `/opt`。`dsh-purge` 等直接修改内核文件的工具不等同于普通插件安装：系统内核由 root 管理，用户下载的内核也受完整性校验保护。定位环境变量只能解决路径识别，不能让运行期清洗安全生效；此类改动需要受支持的插件扩展点，或另行确认的构建阶段适配，并在修改后重新生成完整性描述与签名。
 - 不注册官方 `dsh://` 协议或系统 `dsh` 命令，不绑定官方桌面更新源或强制更新服务。「设置 → 通用 → 软件更新」分别管理内核和桌面版本：内核在用户目录校验、试启动、切换和失败回滚，桌面 deb/rpm 通过系统授权安装且不覆盖兼容的新内核。
-- 两个更新源默认未配置；需要发布者提供独立 HTTPS feed 和可信 Ed25519 公钥。配置、兼容性约束、离线签名和测试方法见 [独立更新说明](docs/updates.md)。
-- 仅支持 Linux x86_64。本项目不会自动部署更新服务、生成生产私钥、上传产物或创建 Git tag。
+- 两个更新源已固定为本仓库 `update-feed` 分支的 HTTPS 签名清单与可信 Ed25519 公钥；首次发布前地址尚无清单。配置签名 Secret 后，GitHub Actions 从固定官方源码构建完整 Linux 内核和桌面 deb/rpm，分别签名；普通 `main` 推送或手动触发只生成 artifact，明确推送 `workbench-v<桌面版本>` 标签才发布 GitHub Release 并更新清单。配置、密钥保管和兼容性约束见 [独立更新说明](docs/updates.md)。
+- 仅支持 Linux x86_64。生产私钥保存在仓库外，需经授权配置 GitHub Actions Secret；构建脚本不自动上传产物或创建 Git tag。
 
 ## 许可证
 

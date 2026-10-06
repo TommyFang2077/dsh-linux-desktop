@@ -1,4 +1,10 @@
 {
-  "kernel": null,
-  "desktop": null
+  "kernel": {
+    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/kernel-latest.json",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAI9yYNDjEBBHTgGaN8n/3eBcyUN+zIxn1k/fzCAmo8yQ=\n-----END PUBLIC KEY-----\n"
+  },
+  "desktop": {
+    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-latest.json",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAI9yYNDjEBBHTgGaN8n/3eBcyUN+zIxn1k/fzCAmo8yQ=\n-----END PUBLIC KEY-----\n"
+  }
 }

@@ -90,7 +90,7 @@ def bundle():
     run("node", ROOT / "scripts/build-icons.mjs", cwd=ROOT)
     prepared = APP / ".desktop-build/targets/linux-x64"
     release = json.loads((prepared / "dsh/desktop-runtime.json").read_text())["release"]
-    runtime = json.loads((prepared / "runtime/versions.json").read_text())
+    runtime = json.loads((prepared / "runtime/primary-runtime/runtime.json").read_text())
     if release["hostProtocolVersion"] != DESKTOP["protocol"] or runtime["node"] != DESKTOP["nodeVersion"]:
         raise RuntimeError("desktop.json compatibility metadata differs from the prepared Host/Node runtime")
     run("node", ROOT / "scripts/build-updates.mjs", cwd=ROOT)

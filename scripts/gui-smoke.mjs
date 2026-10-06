@@ -1,10 +1,10 @@
 /** Drive first launch without credentials or changes to the user's Harness data. */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { readFileSync, readdirSync, readlinkSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 const root = resolve(import.meta.dirname, '..')
@@ -18,9 +18,12 @@ try {
   const { version } = JSON.parse(readFileSync(join(root, 'desktop.json'), 'utf8'))
   const extracted = join(temporary, 'application')
   if (!process.env.DSH_WORKBENCH_TEST_APP) execFileSync('dpkg-deb', ['--extract', join(root, `dist/dsh-workbench-${version}-x64.deb`), extracted])
+  const executable = process.env.DSH_WORKBENCH_TEST_APP ?? join(extracted, 'opt/dsh-workbench/dsh-workbench')
+  const updateConfig = join(temporary, 'updates.json')
+  await writeFile(updateConfig, JSON.stringify({ kernel: null, desktop: null }))
   application = await _electron.launch({
     chromiumSandbox: true,
-    executablePath: process.env.DSH_WORKBENCH_TEST_APP ?? join(extracted, 'opt/dsh-workbench/dsh-workbench'),
+    executablePath: executable,
     env: {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/KEY|SECRET|TOKEN|PASSWORD/iu.test(key))),
       HOME: temporary,
@@ -28,6 +31,7 @@ try {
       XDG_DATA_HOME: join(temporary, 'data'),
       XDG_CACHE_HOME: join(temporary, 'cache'),
       DSH_HOME: join(temporary, 'dsh'),
+      DSH_WORKBENCH_UPDATE_CONFIG: updateConfig,
     },
     timeout: 120_000,
   })
@@ -44,6 +48,24 @@ try {
     if (!welcome) await setTimeout(100)
   }
   assert.ok(welcome, 'The welcome window must load')
+  const expectedNode = join(dirname(executable), 'resources/runtime/primary-runtime/dependencies/node/bin/node')
+  const mainPid = application.process().pid
+  const backendPid = readdirSync('/proc').find(pid => {
+    if (!/^\d+$/u.test(pid)) return false
+    try {
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8')
+      return Number(status.match(/^PPid:\s+(\d+)/mu)?.[1]) === mainPid
+        && readlinkSync(`/proc/${pid}/exe`) === expectedNode
+        && readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('dsh-desktop-host/lib/index.js')
+    } catch (error) {
+      if (['ENOENT', 'ESRCH', 'EACCES'].includes(error.code)) return false
+      throw error
+    }
+  })
+  assert.ok(backendPid, 'The real desktop Host must use its bundled standalone Node')
+  assert.equal(execFileSync(expectedNode, ['--version'], { encoding: 'utf8' }).trim(),
+    `v${JSON.parse(readFileSync(join(dirname(executable), 'resources/runtime/primary-runtime/runtime.json'), 'utf8')).node}`)
+  console.log('Desktop backend verified:', { pid: backendPid, executable: expectedNode })
   await welcome.getByRole('button', { name: /Add API Key|添加 API Key/ }).click()
   await welcome.getByRole('button', { name: /Set up later|稍后配置/ }).click()
   const workspace = application.windows().find(page => page.url().startsWith('dsh-app://'))
@@ -59,6 +81,27 @@ try {
   assert.equal(JSON.parse(readFileSync(join(identity.data, 'default-market.json'), 'utf8')).name, 'dshmarket')
   await workspace.getByText(/^(新会话|New (?:chat|session|conversation))$/i)
     .waitFor({ state: 'visible', timeout: 30_000 })
+  const fixtureWorkspace = join(temporary, 'image-test-workspace')
+  await mkdir(fixtureWorkspace)
+  // Only the native dialog result is supplied; workspace adoption uses the real UI, IPC and Host.
+  await application.evaluate(({ dialog }, directory) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] })
+  }, fixtureWorkspace)
+  await workspace.getByRole('button', { name: /^(添加工作区|Add workspace)$/ }).click()
+  await workspace.getByText('image-test-workspace', { exact: true }).first().waitFor({ state: 'visible' })
+  await workspace.locator('[contenteditable="true"]').waitFor({ state: 'visible' })
+  const pixel = execFileSync(expectedNode, ['-e',
+    'require("sharp")(Buffer.from([17,103,231]), {raw:{width:1,height:1,channels:3}}).png().toBuffer().then(bytes => process.stdout.write(bytes))'],
+  { cwd: join(dirname(executable), 'resources/app/dsh'), timeout: 30_000 })
+  await workspace.locator('input[type="file"]').setInputFiles({ name: 'dsh-smoke-1x1.png', mimeType: 'image/png', buffer: pixel })
+  const preview = workspace.getByRole('img', { name: 'dsh-smoke-1x1.png', exact: true })
+  await preview.waitFor({ state: 'visible', timeout: 30_000 })
+  await preview.evaluate(image => image.decode())
+  assert.deepEqual(await preview.evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight })),
+    { width: 1, height: 1 })
+  await workspace.screenshot({ path: join(root, 'build/image-smoke.png') })
+  await workspace.locator('button[aria-label*="dsh-smoke-1x1.png"]').click()
+  console.log('Desktop 1x1 image attachment preview passed; no model request sent')
   await workspace.getByText(/^(更多|More)$/).click()
   await workspace.getByText(/^(设置|Settings)$/).click()
   const marketEntry = workspace.getByText(/^(Plugin Market|插件市场|应用市场)$/).first()

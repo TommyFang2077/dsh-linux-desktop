@@ -45,11 +45,13 @@ export async function createWorkbenchUpdates(options) {
   const metadata = JSON.parse(await fs.readFile(join(resources, 'desktop.json'), 'utf8'))
   const config = JSON.parse(await fs.readFile(process.env.DSH_WORKBENCH_UPDATE_CONFIG ?? join(resources, 'updates.json'), 'utf8'))
   const descriptor = JSON.parse(await fs.readFile(join(options.bundled.dsh, 'desktop-runtime.json'), 'utf8'))
+  const primaryRuntime = JSON.parse(await fs.readFile(join(options.bundled.runtime, 'primary-runtime/runtime.json'), 'utf8'))
+  if (typeof primaryRuntime.node !== 'string') throw new Error('桌面内核缺少自带 Node 版本信息')
   const extractionLifetime = new AbortController()
   app.on('will-quit', () => extractionLifetime.abort())
   const manager = new UpdateManager({
     root: join(app.getPath('userData'), 'updates'), config,
-    desktop: { ...metadata, version: app.getVersion(), nodeVersion: process.versions.node },
+    desktop: { ...metadata, version: app.getVersion(), nodeVersion: primaryRuntime.node },
     bundled: { ...metadata, ...options.bundled, version: descriptor.release.version,
       protocol: descriptor.release.hostProtocolVersion },
     verifyKernel: options.verifyKernel, probeKernel: options.probeKernel,
