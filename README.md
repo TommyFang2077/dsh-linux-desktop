@@ -2,7 +2,9 @@
 
 基于官方 [DeepSeek Harness Desktop](https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/desktop) 源码的**非官方 Electron Linux 桌面版**，直接复用官方内核、WebUI、私有 Host 与插件管理。仓库：[TommyFang2077/dsh-linux-desktop](https://github.com/TommyFang2077/dsh-linux-desktop)。
 
-提供 **deb/rpm 系统安装包**，安装到 `/opt/dsh-workbench`，桌面软件升级使用 GitHub Release 中对应的签名安装包和系统授权弹窗。同时保留 **`~/Applications/dsh-linux-desktop/` 用户版**，已有用户版继续无 sudo 的归档升级，不会误更新另一套安装。普通桌面归档不是 AppImage，只包含可解包的程序文件。软件包名、可执行文件、应用 ID 和既有配置身份仍保留 `dsh-workbench`，不会因为仓库改名或用户安装而重置数据。
+**当前默认安装在 `~/Applications/dsh-linux-desktop/`，不安装到 `/opt/dsh-workbench`。** 程序由当前用户所有，安装和桌面更新不需要 sudo；启动入口是 `~/.local/bin/dsh-workbench`。普通桌面归档不是 AppImage，只包含可解包的程序文件。软件包名、可执行文件、应用 ID 和既有配置身份仍保留 `dsh-workbench`，不会因为仓库改名或用户安装而重置数据。
+
+GitHub CI 同时保留 deb/rpm 兼容产物。**当前 deb/rpm 的系统安装方式仍使用 `/opt/dsh-workbench`，不是上述 HOME 用户安装方式**；不要用系统安装命令替代下面的默认安装步骤，也不要将生成 deb/rpm 理解为已把现有 HOME 安装改回系统版。
 
 ## 构建
 
@@ -32,21 +34,7 @@ make run                         # 验证后在临时目录试运行，不注册
 make gui-smoke                   # 隔离 HOME 的真实窗口、图片和沙箱验证
 ```
 
-## deb/rpm 系统安装与升级
-
-GitHub Actions 在推送 `main` 或手动触发时构建 deb、rpm 和用户归档，成功 run 的 `linux-updates-<commit>` artifact 包含三种产物、摘要和构建信息。下载后先核对来源与提交，并执行 `sha256sum --check SHA256SUMS`。系统安装示例（选择本发行版格式）：
-
-```sh
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.deb
-# 或 Fedora / RHEL 系：
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.rpm
-```
-
-deb 版本为 `0.2.1~alpha.1-2`，rpm 为 `0.2.1~alpha.1`、Release `2`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
-
-系统版在「设置 → 通用 → 软件更新」下载同一签名清单中的对应 deb/rpm，验证摘要、身份、架构和 Linux 构建号，再通过 pkexec 调用 root 所有且不可被普通用户修改的安装器及包管理器。旧客户端若不支持当前清单格式，需要先手动安装本次包。没有签名 Secret/公开发行时，CI artifact 可手动安装，但不能宣称在线升级已上线。
-
-## 安装在 HOME
+## 默认安装：HOME 用户版
 
 **先验证来源，再执行下载的程序。** 对 CI 下载，核对仓库、提交和成功的 run，并按 GitHub artifact API 提供的 digest 验证下载 ZIP，再使用其中的 `SHA256SUMS` 验证桌面 tar；公开签名发行则使用固定受信公钥验证清单。未知来源的归档不能用它自己附带的校验值或运行时给自己背书。
 
@@ -70,6 +58,22 @@ tar -xzf "$archive" -C "$temporary"
 
 安装或更新失败、取消确认、同步重启失败不会改动当前入口；旧版本保留，可显式使用安装入口的 `--rollback` 回退。首次 Electron 无法启动的自动回滚守护进程暂不提供。中断安装可能留下 `.install-lock`，只能确认没有安装进程后手工清理该空锁目录。
 
+## 兼容 deb/rpm 系统包（非默认安装）
+
+**仅适用于明确选择系统安装的用户；当前 HOME 用户版不使用本节安装命令。**
+
+GitHub Actions 在推送 `main` 或手动触发时构建 deb、rpm 和用户归档，成功 run 的 `linux-updates-<commit>` artifact 包含三种产物、摘要和构建信息。下载后先核对来源与提交，并执行 `sha256sum --check SHA256SUMS`。系统安装示例（选择本发行版格式）：
+
+```sh
+sudo apt install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.deb
+# 或 Fedora / RHEL 系：
+sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.rpm
+```
+
+deb 版本为 `0.2.1~alpha.1-2`，rpm 为 `0.2.1~alpha.1`、Release `2`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
+
+系统版在「设置 → 通用 → 软件更新」下载同一签名清单中的对应 deb/rpm，验证摘要、身份、架构和 Linux 构建号，再通过 pkexec 调用 root 所有且不可被普通用户修改的安装器及包管理器。旧客户端若不支持当前清单格式，需要先手动安装本次包。没有签名 Secret/公开发行时，CI artifact 可手动安装，但不能宣称在线升级已上线。
+
 ## 插件、桌面功能与更新
 
 - Linux 后端使用所选内核自带的独立 Node（当前 24.21.0），不在 Electron Node 模式加载 sharp；候选内核探测和回滚也使用各自的 Node。
@@ -77,7 +81,7 @@ tar -xzf "$archive" -C "$temporary"
 - 移除顶部「应用 / Edit」菜单栏；系统托盘保留打开/退出操作。GNOME 需要兼容 Electron 注册格式的 AppIndicator/KStatusNotifierItem 扩展，程序不自动修改扩展。
 - 首次启动通过官方插件管理器默认安装兼容的 `dshmarket 1.66.8`，保留用户已有版本、已卸载状态和配置；不会强装不兼容的 TUI。
 - 普通插件安装在用户 profile。Host 暴露所选内核的真实路径，但用户拥有文件**不代表** `dsh-purge` 的磁盘补丁已兼容完整性检查；本次不会自动清洗、关掉审批或文件沙箱、伪装官方客户端或修改外部插件配置。
-- 「设置 → 通用 → 软件更新」仍分内核和桌面：内核签名、兼容性、试启动和崩溃回滚逻辑不变；系统版桌面更新使用签名 deb/rpm 和系统授权；HOME 版继续安装用户归档、原子切换并明确重启到新 executable，两者都不把兼容的新内核降级。
+- 「设置 → 通用 → 软件更新」仍分内核和桌面：内核签名、兼容性、试启动和崩溃回滚逻辑不变；默认 HOME 版安装用户归档、原子切换并明确重启到新 executable，不需要系统授权。兼容系统版才使用签名 deb/rpm 和系统授权；两者都不把兼容的新内核降级。
 - 更新 URL 和 Ed25519 公钥保存在 `updates.json`。GitHub Actions 的 main/手动构建只生成 deb/rpm/用户归档 artifact；配置签名 Secret 且明确推送 `workbench-v<官方壳版本>-r<Linux构建号>` 标签才签名并公开发行。未首次发布前清单可能为 HTTP 404，不能称为自动更新已上线。详见 [更新说明](docs/updates.md)。
 
 所有上游改动保存在 `patches/linux.patch`；不直接修改已安装系统目录，不移动仓库外的生产签名密钥。GUI 是默认启动入口，不注册官方 `dsh://` 或占用系统 `dsh` 命令。
