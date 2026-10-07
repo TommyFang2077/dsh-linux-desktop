@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an independently branded Linux package from a pinned official desktop."""
+"""Build a user-owned Linux desktop archive from pinned official sources."""
 
 import argparse
 import hashlib
@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,8 +59,13 @@ def prepare():
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=SOURCE, text=True).strip()
     if commit != LOCK["commit"]:
         raise RuntimeError("Upstream checkout differs from upstream.json; refusing to overwrite it")
-    if json.loads((SOURCE / "package.json").read_text())["version"] != LOCK["version"]:
+    official_version = json.loads((SOURCE / "package.json").read_text())["version"]
+    if official_version != LOCK["version"]:
         raise RuntimeError("Upstream package version does not match the pinned version")
+    if DESKTOP["version"] != official_version:
+        raise RuntimeError("desktop.json version must match the pinned official shell version")
+    if type(DESKTOP.get("linuxRevision")) is not int or DESKTOP["linuxRevision"] < 1:
+        raise RuntimeError("desktop.json linuxRevision must be a positive integer")
     apply_patch(SOURCE, ROOT / "patches/linux.patch")
     pnpm("install", "--frozen-lockfile")
 
@@ -70,9 +76,6 @@ def build():
 
 
 def package():
-    for tool in ("rpmbuild", "rpm", "dpkg-deb"):
-        if shutil.which(tool) is None:
-            raise RuntimeError(f"Required packaging tool not found: {tool}")
     paths = APP / ".desktop-build/targets/linux-x64"
     pnpm("run", "release:pack", "--family", "dsh", "--out", paths / "packed/dsh")
     pnpm("--dir", "apps/desktop-host", "pack", "--pack-destination", paths / "packed/dsh")
@@ -86,6 +89,21 @@ def package():
     bundle()
 
 
+def desktop_archive(directory):
+    return Path(directory) / f"dsh-workbench-{DESKTOP['version']}-r{DESKTOP['linuxRevision']}-linux-x64.tar.gz"
+
+
+def archive_entry(info):
+    if info.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE) or info.sparse is not None:
+        raise RuntimeError("Desktop archive cannot contain links or special files")
+    if info.mode & 0o7022:
+        raise RuntimeError("Desktop archive contains unsafe writable or privileged permissions")
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mtime = 0
+    return info
+
+
 def bundle():
     run("node", ROOT / "scripts/build-icons.mjs", cwd=ROOT)
     prepared = APP / ".desktop-build/targets/linux-x64"
@@ -94,7 +112,7 @@ def bundle():
     if release["hostProtocolVersion"] != DESKTOP["protocol"] or runtime["node"] != DESKTOP["nodeVersion"]:
         raise RuntimeError("desktop.json compatibility metadata differs from the prepared Host/Node runtime")
     run("node", ROOT / "scripts/build-updates.mjs", cwd=ROOT)
-    # NTFS/exFAT cannot preserve Unix modes; installers are always staged on Linux /tmp.
+    # NTFS/exFAT cannot preserve Unix modes; archives are always staged on Linux /tmp.
     with tempfile.TemporaryDirectory(prefix="dsh-workbench-package-", dir="/tmp") as directory:
         output = Path(directory)
         env = {**ENV, "DSH_WORKBENCH_OUTPUT": directory, "TMPDIR": directory, "TMP": directory, "TEMP": directory,
@@ -102,52 +120,90 @@ def bundle():
         shutil.copyfile(ROOT / "build/icon.png", output / "icon.png")
         (output / "icon.png").chmod(0o644)
         pnpm("exec", "electron-builder", "--config", ROOT / "electron-builder.config.mjs",
-             "--linux", "deb", "rpm", "--x64", "--publish", "never", cwd=APP, env=env)
+             "--linux", "--dir", "--x64", "--publish", "never", cwd=APP, env=env)
         pnpm("exec", "tsx", ROOT / "scripts/smoke.mts", env=env)
+        with tarfile.open(desktop_archive(output), "w:gz", compresslevel=1) as archive:
+            archive.add(output / "linux-unpacked", arcname="app", filter=archive_entry)
         verify(output)
         DIST.mkdir(exist_ok=True)
-        names = [f"dsh-workbench-{DESKTOP['version']}-x64.{extension}" for extension in ("deb", "rpm")]
-        for name in [*names, "SHA256SUMS", "build-info.json"]:
+        for name in (desktop_archive(output).name, "SHA256SUMS", "build-info.json"):
             shutil.copyfile(output / name, DIST / name)
 
 
+def verify_archive(file, destination=None):
+    """Validate the user artifact before extraction or recording checksums."""
+    if not file.is_file() or file.is_symlink() or not 0 < file.stat().st_size <= 1024 ** 3:
+        raise RuntimeError("A non-empty, bounded desktop archive is required")
+    executable = "app/dsh-workbench"
+    node = "app/resources/runtime/primary-runtime/dependencies/node/bin/node"
+    required = {executable, node, "app/resources/icon.png", "app/resources/app/package.json",
+                "app/resources/app/workbench/desktop.json", "app/resources/app/workbench/updates.json",
+                "app/resources/app/dsh/desktop-runtime.json", "app/resources/runtime/primary-runtime/runtime.json"}
+    with tarfile.open(file, "r:gz") as archive:
+        entries = {}
+        total = 0
+        for item in archive:
+            name = item.name[:-1] if item.name.endswith("/") else item.name
+            parts = name.split("/")
+            if "\\" in name or "\0" in name or parts[0] != "app" or any(p in ("", ".", "..") for p in parts):
+                raise RuntimeError("Desktop archive contains an unsafe path")
+            if name in entries or item.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE) or item.sparse is not None:
+                raise RuntimeError("Desktop archive contains links, special or duplicate files")
+            if item.mode & 0o7022 or (item.mode & (0o700 if item.isdir() else 0o600)) != (0o700 if item.isdir() else 0o600):
+                raise RuntimeError("Desktop archive contains unsafe writable permissions or non-writable owner files")
+            if item.size < 0 or (item.isdir() and item.size != 0):
+                raise RuntimeError("Desktop archive entry size is invalid")
+            entries[name] = item
+            total += item.size
+            if len(entries) > 100_000 or total > 4 * 1024 ** 3 or total > file.stat().st_size * 1000:
+                raise RuntimeError("Desktop archive exceeds extraction limits")
+        if "app" not in entries or not entries["app"].isdir() or not required.issubset(entries):
+            raise RuntimeError("Desktop archive omits required application files")
+        for name in required:
+            if not entries[name].isfile() or entries[name].size <= 0:
+                raise RuntimeError("Desktop archive application entries must be regular non-empty files")
+        if any(not entries[name].mode & 0o100 for name in (executable, node)):
+            raise RuntimeError("Desktop archive executable permissions are missing")
+
+        def read_json(name):
+            if entries[name].size > 32 * 1024 ** 2:
+                raise RuntimeError("Desktop archive metadata is too large")
+            return json.load(archive.extractfile(entries[name]))
+
+        package = read_json("app/resources/app/package.json")
+        metadata = read_json("app/resources/app/workbench/desktop.json")
+        descriptor = read_json("app/resources/app/dsh/desktop-runtime.json")
+        runtime = read_json("app/resources/runtime/primary-runtime/runtime.json")
+        if not all(isinstance(value, dict) for value in (package, metadata, descriptor, runtime)) or not isinstance(descriptor.get("release"), dict):
+            raise RuntimeError("Desktop archive metadata must be objects")
+        if package.get("name") != "dsh-workbench" or package.get("productName") not in (None, "dsh-workbench") or package.get("version") != DESKTOP["version"] or metadata != DESKTOP:
+            raise RuntimeError("Unexpected desktop archive identity, version or metadata")
+        if descriptor.get("platform") != "linux" or descriptor.get("arch") != "x64" or descriptor.get("release", {}).get("version") != LOCK["version"]:
+            raise RuntimeError("Unexpected desktop archive kernel identity or platform")
+        if descriptor["release"].get("hostProtocolVersion") != DESKTOP["protocol"] or runtime.get("node") != DESKTOP["nodeVersion"]:
+            raise RuntimeError("Desktop archive Host/Node metadata is incompatible")
+        if not isinstance(read_json("app/resources/app/workbench/updates.json"), dict):
+            raise RuntimeError("Desktop archive update configuration is invalid")
+        if destination is not None:
+            archive.extractall(destination, members=entries.values())
+
+
 def launch():
+    archive_path = desktop_archive(DIST)
     with tempfile.TemporaryDirectory(prefix="dsh-workbench-run-", dir="/tmp") as directory:
-        run("dpkg-deb", "--extract", DIST / f"dsh-workbench-{DESKTOP['version']}-x64.deb", directory, cwd=ROOT)
-        run(Path(directory) / "opt/dsh-workbench/dsh-workbench", cwd=ROOT)
+        verify_archive(archive_path, Path(directory))
+        run(Path(directory) / "app/dsh-workbench", cwd=ROOT)
 
 
 def verify(directory=None):
     directory = DIST if directory is None else Path(directory)
-    files = [directory / f"dsh-workbench-{DESKTOP['version']}-x64.{extension}" for extension in ("deb", "rpm")]
-    if any(not file.is_file() or file.stat().st_size == 0 for file in files):
-        raise RuntimeError("Both non-empty deb and rpm packages are required")
-    deb, rpm = files
-    deb_metadata = [subprocess.check_output(["dpkg-deb", "--field", str(deb), field], text=True).strip()
-                    for field in ("Package", "Version", "Architecture")]
-    rpm_metadata = subprocess.check_output(
-        ["rpm", "-qp", "--queryformat", "%{NAME}\n%{VERSION}\n%{ARCH}", str(rpm)], text=True).splitlines()
-    version = DESKTOP["version"].replace("-", "~")
-    if deb_metadata != ["dsh-workbench", version, "amd64"] or rpm_metadata != ["dsh-workbench", version, "x86_64"]:
-        raise RuntimeError("Unexpected package identity, version, or architecture")
-    for command, file in ((["dpkg-deb", "--contents"], deb),
-                          (["rpm", "-qp", "--queryformat", "[%{FILEMODES:perms} %{FILENAMES}\n]"], rpm)):
-        listing = subprocess.check_output([*command, str(file)], text=True)
-        for required in ("/opt/dsh-workbench/dsh-workbench", "resources/app/package.json", "applications/dsh-workbench.desktop"):
-            if required not in listing:
-                raise RuntimeError(f"{file.name} omits {required}")
-        for line in listing.splitlines():
-            permissions = line.split(maxsplit=1)[0]
-            if permissions[0] != "l" and (permissions[5] == "w" or permissions[8] == "w"):
-                raise RuntimeError(f"{file.name} contains unsafe writable permissions: {line}")
-    sums = []
-    for file in files:
-        with file.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        sums.append(f"{digest}  {file.name}\n")
-        print(f"Verified {file.name} ({file.stat().st_size:,} bytes)")
-    (directory / "SHA256SUMS").write_text("".join(sums))
-    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "target": "linux-x64", "official": False}, indent=2) + "\n")
+    file = desktop_archive(directory)
+    verify_archive(file)
+    with file.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    print(f"Verified {file.name} ({file.stat().st_size:,} bytes)")
+    (directory / "SHA256SUMS").write_text(f"{digest}  {file.name}\n")
+    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "target": "linux-x64", "distribution": "user-archive", "official": False}, indent=2) + "\n")
 
 
 def main():

@@ -516,7 +516,7 @@ index b4b8153..0fb5ee1 100644
 +    verifyKernel: (dsh: string, version: string) => Promise<unknown>
 +    probeKernel: (kernel: { dsh: string; runtime: string }) => Promise<void>
 +    prepareRestart: () => Promise<boolean>
-+    restart: () => void
++    restart: (execPath?: string) => void
 +    recover: () => Promise<void>
 +    trustedSender: (event: IpcMainInvokeEvent) => boolean
 +  }): Promise<WorkbenchUpdates>
@@ -621,7 +621,7 @@ index b4b8153..0fb5ee1 100644
 +      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
 +      probeKernel: probeWorkbenchKernel,
 +      prepareRestart: () => prepareWorkbenchRestart(),
-+      restart: () => { app.relaunch(); quitWithoutConfirmation() },
++      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }); quitWithoutConfirmation() },
 +      recover: () => recoverWorkbenchBackend(),
 +      trustedSender: (event) => {
 +        try { assertProductSender(event); return true }
@@ -639,7 +639,20 @@ index b4b8153..0fb5ee1 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -508,8 +622,9 @@ async function main(): Promise<void> {
+@@ -442,7 +556,11 @@ async function main(): Promise<void> {
+   const backend = new DesktopBackendController((onFailure) => {
+     const hostInspectPort = developmentHostInspectPort(development)
+     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
+-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
++      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(),
++        ...(process.platform === 'linux' && app.isPackaged ? { DSH_SURFACE: 'desktop',
++          DSH_BASE: join(resources.dsh, 'node_modules', '@deepseek-ai'),
++          DSH_DESKTOP_INSTALL: dirname(dirname(app.getAppPath())) } : {}),
++      }, onFailure,
+       primaryRuntime,
+       resources, (next) => { platformView.setSession(next) })
+     return {
+@@ -508,8 +626,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {

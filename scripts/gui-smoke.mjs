@@ -1,7 +1,8 @@
 /** Drive first launch without credentials or changes to the user's Harness data. */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync, readlinkSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { createReadStream, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -15,10 +16,24 @@ const { _electron } = require(require.resolve('playwright-core', {
 const temporary = await mkdtemp('/tmp/dsh-workbench-gui-')
 let application
 try {
-  const { version } = JSON.parse(readFileSync(join(root, 'desktop.json'), 'utf8'))
-  const extracted = join(temporary, 'application')
-  if (!process.env.DSH_WORKBENCH_TEST_APP) execFileSync('dpkg-deb', ['--extract', join(root, `dist/dsh-workbench-${version}-x64.deb`), extracted])
-  const executable = process.env.DSH_WORKBENCH_TEST_APP ?? join(extracted, 'opt/dsh-workbench/dsh-workbench')
+  const { version, linuxRevision } = JSON.parse(readFileSync(join(root, 'desktop.json'), 'utf8'))
+  let userExecutable
+  if (!process.env.DSH_WORKBENCH_TEST_APP) {
+    const name = `dsh-workbench-${version}-r${linuxRevision}-linux-x64.tar.gz`
+    const archive = join(root, 'dist', name)
+    const expected = readFileSync(join(root, 'dist/SHA256SUMS'), 'utf8').split('\n')
+      .find(line => line.endsWith(`  ${name}`))?.split('  ')[0]
+    assert.match(expected ?? '', /^[a-f0-9]{64}$/, 'The local user artifact must have a recorded SHA-256')
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(archive)) hash.update(chunk)
+    assert.equal(hash.digest('hex'), expected, 'Verify the archive before executing its bundled runtime')
+    const { installUserDesktop } = await import('../build/user-install.mjs')
+    const installed = await installUserDesktop({ archive, sha256: expected, version, home: temporary,
+      root: join(temporary, 'Applications/dsh-linux-desktop'), xdgDataHome: join(temporary, 'data') })
+    userExecutable = installed.executable
+    assert.equal(statSync(userExecutable).uid, process.getuid(), 'The installed desktop must belong to its user')
+  }
+  const executable = process.env.DSH_WORKBENCH_TEST_APP ?? userExecutable
   const updateConfig = join(temporary, 'updates.json')
   await writeFile(updateConfig, JSON.stringify({ kernel: null, desktop: null }))
   application = await _electron.launch({

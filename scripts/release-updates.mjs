@@ -1,20 +1,20 @@
 import { createPrivateKey, createPublicKey, createHash, sign } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import * as tar from 'tar'
-import { fileHash, httpsUrl, inventory, verifyFeed } from '../updates/core.mjs'
+import { extractDesktop, fileHash, httpsUrl, inventory, verifyFeed } from '../updates/core.mjs'
+import { verifyUserDesktop } from '../updates/user-install.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const { positionals, values } = parseArgs({ allowPositionals: true, options: {
   input: { type: 'string' }, output: { type: 'string' }, key: { type: 'string' },
-  'base-url': { type: 'string' }, deb: { type: 'string' }, rpm: { type: 'string' },
+  'base-url': { type: 'string' }, archive: { type: 'string' },
   metadata: { type: 'string' },
 } })
 const channel = positionals[0]
 if (!['kernel', 'desktop'].includes(channel) || !values.key || !values.output || !values['base-url']) {
-  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel] [--deb file --rpm file] [--metadata desktop.json]')
+  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel] [--archive desktop.tar.gz] [--metadata desktop.json]')
 }
 const keyPath = resolve(values.key)
 const keyStat = await fs.stat(keyPath)
@@ -29,7 +29,7 @@ async function asset(path) {
   return { url: new URL(encodeURIComponent(basename(path)), base).href,
     size: (await fs.stat(path)).size, sha256: await fileHash(path) }
 }
-let release = { schemaVersion: 1, channel, platform: 'linux', arch: 'x64', ...metadata }
+let release = { ...metadata, schemaVersion: channel === 'kernel' ? 1 : 2, channel, platform: 'linux', arch: 'x64' }
 if (channel === 'kernel') {
   if (!values.input) throw new Error('Kernel input must contain prepared dsh/ and runtime/')
   const input = resolve(values.input)
@@ -50,15 +50,16 @@ if (channel === 'kernel') {
     release = { ...release, asset: await asset(archive), manifestSha256: createHash('sha256').update(manifest).digest('hex') }
   } finally { await fs.rm(staging, { recursive: true, force: true }) }
 } else {
-  if (!values.deb || !values.rpm || !metadata.kernelRange || !metadata.nodeVersion) {
-    throw new Error('Desktop feed requires --deb, --rpm and metadata.kernelRange/nodeVersion for the target desktop')
+  if (!values.archive || !metadata.kernelRange || !metadata.nodeVersion) {
+    throw new Error('Desktop feed requires --archive and desktop kernelRange/nodeVersion metadata')
   }
-  const expected = metadata.version.replaceAll('-', '~')
-  const deb = ['Package', 'Version', 'Architecture'].map(field => execFileSync('dpkg-deb', ['--field', resolve(values.deb), field], { encoding: 'utf8' }).trim())
-  const rpm = execFileSync('rpm', ['-qp', '--queryformat', '%{NAME}\\n%{VERSION}\\n%{ARCH}', resolve(values.rpm)], { encoding: 'utf8' }).split('\n')
-  if (JSON.stringify(deb) !== JSON.stringify(['dsh-workbench', expected, 'amd64'])
-    || JSON.stringify(rpm) !== JSON.stringify(['dsh-workbench', expected, 'x86_64'])) throw new Error('Installer identity/version/architecture differs from signing metadata')
-  release.assets = { deb: await asset(resolve(values.deb)), rpm: await asset(resolve(values.rpm)) }
+  const staging = await fs.mkdtemp('/tmp/dsh-desktop-signing-')
+  try {
+    await extractDesktop(resolve(values.archive), staging)
+    const actual = await verifyUserDesktop(join(staging, 'app'), metadata.version)
+    if (JSON.stringify(actual) !== JSON.stringify(metadata)) throw new Error('Desktop archive metadata differs from signing metadata')
+    release = { ...release, format: 'tar.gz', asset: await asset(resolve(values.archive)) }
+  } finally { await fs.rm(staging, { recursive: true, force: true }) }
 }
 const payload = Buffer.from(JSON.stringify(release))
 const envelope = { payload: payload.toString('base64'), signature: sign(null, payload, key).toString('base64') }

@@ -33,19 +33,21 @@ export function verifyFeed(envelope, publicKey, channel) {
   if (key.asymmetricKeyType !== 'ed25519' || signature.length !== 64
     || !verify(null, payload, key, signature)) fail('更新签名校验失败')
   const release = JSON.parse(payload.toString('utf8'))
-  if (!object(release) || release.schemaVersion !== 1 || release.channel !== channel
+  if (!object(release) || release.schemaVersion !== (channel === 'kernel' ? 1 : 2) || release.channel !== channel
     || release.platform !== 'linux' || release.arch !== 'x64' || !validVersion(release.version)
     || !Number.isSafeInteger(release.protocol) || release.protocol < 1
     || typeof release.dataEpoch !== 'string' || !/^[a-zA-Z0-9._-]{1,80}$/.test(release.dataEpoch)
     || !range(release.desktopRange) || !range(release.nodeRange)) fail('更新元数据无效或平台不匹配')
-  const assets = channel === 'kernel' ? [release.asset] : [release.assets?.deb, release.assets?.rpm]
+  const assets = [release.asset]
+  if (channel === 'desktop' && release.format !== 'tar.gz') fail('不支持的用户桌面归档格式')
   for (const asset of assets) {
     if (!object(asset) || !digest(asset.sha256) || !Number.isSafeInteger(asset.size)
       || asset.size <= 0 || asset.size > MAX_DOWNLOAD) fail('更新文件大小或摘要无效')
     httpsUrl(asset.url)
   }
   if (channel === 'kernel' && !digest(release.manifestSha256)) fail('内核清单摘要无效')
-  if (channel === 'desktop' && (!range(release.kernelRange) || !validVersion(release.nodeVersion))) fail('桌面兼容信息无效')
+  if (channel === 'desktop' && (!range(release.kernelRange) || !validVersion(release.nodeVersion)
+    || !Number.isSafeInteger(release.linuxRevision) || release.linuxRevision < 1)) fail('桌面兼容信息或 Linux 构建号无效')
   return release
 }
 
@@ -70,8 +72,8 @@ function relativePath(value) {
   return value
 }
 
-/** Inventory includes the support runtime as well as the dsh descriptor's own tree. */
-export async function inventory(root) {
+/** Default inventory seals dsh and runtime; [''] inventories one complete desktop tree. */
+export async function inventory(root, directories = ['dsh', 'runtime']) {
   const files = []
   async function walk(directory, prefix) {
     const directoryStat = await fs.lstat(directory)
@@ -89,7 +91,7 @@ export async function inventory(root) {
       }
     }
   }
-  for (const name of ['dsh', 'runtime']) await walk(join(root, name), name)
+  for (const name of directories) await walk(join(root, name), name)
   return files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
 }
 
@@ -108,7 +110,7 @@ export async function verifyKernelTree(root, release) {
   }
 }
 
-function archiveValidator() {
+function archiveValidator(layout = 'kernel') {
   let bytes = 0, count = 0
   const paths = new Set()
   return entry => {
@@ -120,7 +122,10 @@ function archiveValidator() {
     relativePath(path)
     if (!['File', 'Directory'].includes(entry.type) || paths.has(path)) fail('内核归档包含链接、特殊文件或重复路径')
     paths.add(path)
-    if (!['dsh', 'runtime', 'kernel.json'].includes(path.split('/')[0])) fail('归档包含无关文件')
+    const roots = layout === 'desktop' ? ['app'] : ['dsh', 'runtime', 'kernel.json']
+    if (!roots.includes(path.split('/')[0])) fail('归档包含无关文件')
+    const owner = entry.type === 'Directory' ? 0o700 : 0o600
+    if (layout === 'desktop' && ((entry.mode & 0o7022) || (entry.mode & owner) !== owner)) fail('桌面归档包含不安全权限或不可写的用户文件')
     bytes += entry.size
     if (++count > MAX_FILES || bytes > MAX_UNPACKED) fail('内核解包大小超限')
   }
@@ -133,9 +138,22 @@ export async function extractKernel(archive, destination) {
 
 /** Synchronous tar I/O is used only in the isolated worker to bound pending extraction buffers. */
 export function extractKernelSync(archive, destination) {
-  const inspect = archiveValidator()
+  extractArchiveSync(archive, destination, 'kernel')
+}
+
+/** Desktop archives contain one app/ tree; kernel archives retain their original layout. */
+export async function extractDesktop(archive, destination) {
+  extractArchiveSync(archive, destination, 'desktop')
+}
+
+export function extractDesktopSync(archive, destination) {
+  extractArchiveSync(archive, destination, 'desktop')
+}
+
+function extractArchiveSync(archive, destination, layout) {
+  const inspect = archiveValidator(layout)
   tar.t({ file: archive, sync: true, strict: true, maxDecompressionRatio: 1000, onReadEntry: inspect })
-  const inspectExtracted = archiveValidator()
+  const inspectExtracted = archiveValidator(layout)
   let failure
   tar.x({ file: archive, cwd: destination, sync: true, strict: true, preservePaths: false, noMtime: true,
     maxDecompressionRatio: 1000, filter(_path, entry) {
@@ -146,7 +164,7 @@ export function extractKernelSync(archive, destination) {
   if (failure) throw failure
 }
 
-async function atomicJson(path, value) {
+export async function atomicJson(path, value) {
   const temporary = `${path}.${randomUUID()}`
   const file = await fs.open(temporary, 'wx', 0o600)
   try { await file.writeFile(JSON.stringify(value) + '\n'); await file.sync() } finally { await file.close() }
@@ -222,7 +240,9 @@ export class UpdateManager {
       busy: this.busy, progress: this.progress ?? '', notice: this.notice, restartRequired: this.state.pending === 'staged',
       kernel: { version: this.selected.version, bundledVersion: this.bundled.version,
         available: this.candidates.kernel?.release.version ?? null, configured: Boolean(this.config.kernel) },
-      desktop: { version: this.desktop.version, available: this.candidates.desktop?.release.version ?? null,
+      desktop: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
+        available: this.candidates.desktop?.release.version ?? null,
+        availableLinuxRevision: this.candidates.desktop?.release.linuxRevision ?? null,
         configured: Boolean(this.config.desktop) },
     }
   }
@@ -279,7 +299,8 @@ export class UpdateManager {
         if (!satisfies(this.selected.version, release.kernelRange)) fail('该桌面版本不支持当前内核，拒绝降级内核')
       }
       const current = channel === 'kernel' ? this.selected.version : this.desktop.version
-      if (semver.gt(release.version, current)) this.candidates[channel] = { release, envelope }
+      if (semver.gt(release.version, current) || (channel === 'desktop' && semver.eq(release.version, current)
+        && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) this.candidates[channel] = { release, envelope }
       return this.status()
     })
   }
@@ -344,23 +365,20 @@ export class UpdateManager {
     })
   }
 
-  async installDesktop(format, prepareRestart, install, restart) {
+  async installDesktop(prepareRestart, install, restart) {
     return this.exclusive(async () => {
-      if (!['deb', 'rpm'].includes(format)) fail('未知桌面包格式')
       if (this.state.pending) fail('请先完成内核重启，再更新桌面端')
       const { release } = this.candidates.desktop ?? fail('请先检查桌面更新')
       checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
         dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
       const directory = await fs.mkdtemp(join(this.root, '.desktop-'))
       try {
-        const asset = release.assets[format]
-        const path = join(directory, `dsh-workbench.${format}`)
+        const asset = release.asset
+        const path = join(directory, 'desktop.tar.gz')
         await this.download(asset, path)
-        if (!await prepareRestart()) return false
-        // The privileged helper copies and hashes again before executing the package manager.
-        await install({ path, format, version: release.version, sha256: asset.sha256, size: asset.size })
-        await restart()
-        return true
+        const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision,
+          sha256: asset.sha256, prepareRestart, restart })
+        return result !== null
       } finally { await fs.rm(directory, { recursive: true, force: true }) }
     })
   }

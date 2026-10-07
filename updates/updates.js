@@ -2,7 +2,9 @@ let working = false
 function render(status) {
   for (const channel of ['kernel', 'desktop']) {
     const state = status[channel]
-    document.getElementById(`${channel}-version`).textContent = `当前版本：${state.version}${state.available ? ` · 可用版本：${state.available}` : ''}`
+    const build = channel === 'desktop' ? ` · Linux 构建 r${state.linuxRevision}` : ''
+    const availableBuild = channel === 'desktop' ? ` · Linux 构建 r${state.availableLinuxRevision}` : ''
+    document.getElementById(`${channel}-version`).textContent = `当前版本：${state.version}${build}${state.available ? ` · 可用版本：${state.available}${availableBuild}` : ''}`
     document.getElementById(`${channel}-source`).textContent = state.configured ? '已配置独立签名更新源' : '尚未配置此通道的发布源与签名公钥'
     for (const button of document.querySelectorAll(`[data-channel="${channel}"]`)) {
       button.disabled = working || status.busy || !state.configured || (button.dataset.action === 'install' && !state.available)

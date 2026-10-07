@@ -30,7 +30,7 @@ test('CI preflight validates feeds, permits unsigned branch builds and refuses r
   const run = changes => execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
     cwd: new URL('..', import.meta.url),
     env: { ...process.env, GITHUB_REPOSITORY: 'TommyFang2077/dsh-linux-desktop', HAS_SIGNING_KEY: 'true',
-      GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: `workbench-v${desktop.version}`, ...changes },
+      GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: `workbench-v${desktop.version}-r${desktop.linuxRevision}`, ...changes },
     stdio: 'pipe',
   })
   for (const channel of ['kernel', 'desktop']) {

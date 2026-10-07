@@ -247,18 +247,23 @@ test('desktop update uses a different signed channel and never writes kernel poi
   const f = await fixture(t)
   const bytes = Buffer.from('a mocked verified desktop installer')
   const asset = { url: 'https://updates.test/desktop.deb', size: bytes.length, sha256: sha(bytes) }
-  const release = { ...f.release, channel: 'desktop', version: '1.2.0', nodeVersion: '24.18.1',
-    kernelRange: '>=1 <2', assets: { deb: asset, rpm: asset } }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz', linuxRevision: 1, version: '1.2.0', nodeVersion: '24.18.1',
+    kernelRange: '>=1 <2', asset }
   f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(release))))
   f.responses.set(asset.url, bytes)
   await f.manager.check('desktop')
   const before = JSON.stringify(f.manager.state)
   let installed
-  await f.manager.installDesktop('deb', async () => true, async args => { installed = args }, () => {})
+  await f.manager.installDesktop(async () => true, async args => {
+    installed = args
+    assert.equal(await args.prepareRestart(), true)
+    await args.restart('/home/user/Applications/desktop/current/dsh-workbench')
+    return { executable: '/home/user/Applications/desktop/current/dsh-workbench' }
+  }, () => {})
   assert.equal(installed.version, '1.2.0')
   assert.equal(installed.sha256, asset.sha256)
   assert.equal(JSON.stringify(f.manager.state), before)
-  await assert.rejects(fs.stat(installed.path), { code: 'ENOENT' })
+  await assert.rejects(fs.stat(installed.archive), { code: 'ENOENT' })
   release.kernelRange = '>=2'
   f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(release))))
   await assert.rejects(f.manager.check('desktop'), /不支持当前内核/)
@@ -271,8 +276,8 @@ test('GitHub Releases feeds and assets follow bounded redirects without bypassin
   const taggedFeed = `${base}download/v1.2.0/desktop-latest.json`
   const bytes = Buffer.from('verified GitHub desktop installer')
   const asset = { url: `${base}download/v1.2.0/desktop.deb`, size: bytes.length, sha256: sha(bytes) }
-  const release = { ...f.release, channel: 'desktop', version: '1.2.0', nodeVersion: '24.18.1',
-    kernelRange: '>=1 <2', assets: { deb: asset, rpm: asset } }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz', linuxRevision: 1, version: '1.2.0', nodeVersion: '24.18.1',
+    kernelRange: '>=1 <2', asset }
   f.options.config.desktop.url = feed
   const replies = new Map([
     [feed, { location: taggedFeed }],
@@ -289,8 +294,9 @@ test('GitHub Releases feeds and assets follow bounded redirects without bypassin
   }
   await f.manager.check('desktop')
   assert.equal(f.manager.status().desktop.available, '1.2.0')
-  await f.manager.installDesktop('deb', async () => true, async args => {
-    assert.deepEqual(await fs.readFile(args.path), bytes)
+  await f.manager.installDesktop(async () => true, async args => {
+    assert.deepEqual(await fs.readFile(args.archive), bytes)
+    return { executable: '/home/user/new-dsh-workbench' }
   }, () => {})
   assert.equal(f.manager.state.active, null)
   replies.set('https://release-assets.githubusercontent.com/feed', { body: JSON.stringify(signed(release, generateKeyPairSync('ed25519').privateKey)) })
@@ -327,15 +333,37 @@ test('GitHub download redirects reject other repositories, hosts, insecure URLs 
   await assert.rejects(f.manager.response('https://updates.test/release.json'), /重定向/)
 })
 
+test('Linux revisions order desktop rebuilds without changing or downgrading official shell versions', async t => {
+  const f = await fixture(t)
+  f.manager.desktop.linuxRevision = 2
+  f.manager.desktop.version = '1.2.0'
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    version: f.manager.desktop.version, linuxRevision: 3, nodeVersion: '24.18.1', kernelRange: '>=1 <2' }
+  const feed = value => f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(value))))
+  feed(release)
+  await f.manager.check('desktop')
+  assert.equal(f.manager.status().desktop.available, f.manager.desktop.version)
+  assert.equal(f.manager.status().desktop.availableLinuxRevision, 3)
+  assert.equal(f.manager.status().desktop.linuxRevision, 2)
+  for (const candidate of [{ ...release, linuxRevision: 2 }, { ...release, linuxRevision: 1 },
+    { ...release, version: '1.1.0', linuxRevision: 100 }]) {
+    feed(candidate)
+    await f.manager.check('desktop')
+    assert.equal(f.manager.status().desktop.available, null)
+  }
+  feed({ ...release, linuxRevision: -1 })
+  await assert.rejects(f.manager.check('desktop'), /构建号/)
+})
+
 test('desktop authorization/installer failure preserves kernel state and cleans the download', async t => {
   const f = await fixture(t)
   const bytes = Buffer.from('installer')
   const asset = { url: 'https://updates.test/desktop.deb', size: bytes.length, sha256: sha(bytes) }
-  const release = { ...f.release, channel: 'desktop', version: '1.2.0', nodeVersion: '24.18.1', kernelRange: '>=1 <2', assets: { deb: asset, rpm: asset } }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz', linuxRevision: 1, version: '1.2.0', nodeVersion: '24.18.1', kernelRange: '>=1 <2', asset }
   f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(release))))
   f.responses.set(asset.url, bytes)
   await f.manager.check('desktop')
-  await assert.rejects(f.manager.installDesktop('deb', async () => true, async () => { throw new Error('authorization cancelled') }, () => assert.fail('must not restart')), /authorization cancelled/)
+  await assert.rejects(f.manager.installDesktop(async () => true, async () => { throw new Error('activation failed') }, () => assert.fail('must not restart')), /activation failed/)
   assert.equal(f.manager.state.active, null)
   assert.equal(f.manager.busy, false)
 })

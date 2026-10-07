@@ -42,13 +42,14 @@ jobs:
             assert.equal(config[channel].url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${channel}-latest.json`)
             assert.equal(createPublicKey(config[channel].publicKey).asymmetricKeyType, 'ed25519')
           }
-          const { version } = JSON.parse(readFileSync('desktop.json', 'utf8'))
-          if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(process.env.GITHUB_REF_NAME, `workbench-v${version}`)
+          const { version, linuxRevision } = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          assert.ok(Number.isSafeInteger(linuxRevision) && linuxRevision > 0)
+          if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(process.env.GITHUB_REF_NAME, `workbench-v${version}-r${linuxRevision}`)
           JS
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git python3 rpm dpkg-dev libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
+          sudo apt-get install -y build-essential git python3 libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
       - name: Prepare, test and package official Linux sources
         run: |
           make prepare
@@ -76,12 +77,13 @@ jobs:
           }
           JS
           version=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).version')
-          base="https://github.com/$GITHUB_REPOSITORY/releases/download/workbench-v$version/"
+          revision=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).linuxRevision')
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/workbench-v$version-r$revision/"
           node build/release-updates.mjs kernel \
             --input build/upstream/apps/desktop/.desktop-build/targets/linux-x64 \
             --metadata desktop.json --output dist/kernel-release --key "$key" --base-url "$base"
           node build/release-updates.mjs desktop \
-            --deb "dist/dsh-workbench-$version-x64.deb" --rpm "dist/dsh-workbench-$version-x64.rpm" \
+            --archive "dist/dsh-workbench-$version-r$revision-linux-x64.tar.gz" \
             --metadata desktop.json --output dist/desktop-release --key "$key" --base-url "$base"
       - uses: actions/upload-artifact@v4
         with:
@@ -90,8 +92,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
           path: |
-            dist/dsh-workbench-*-x64.deb
-            dist/dsh-workbench-*-x64.rpm
+            dist/dsh-workbench-*-linux-x64.tar.gz
+            dist/SHA256SUMS
+            dist/build-info.json
             dist/kernel-release/
             dist/desktop-release/
 
@@ -119,11 +122,12 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).version')
+          revision=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).linuxRevision')
           flags=(--verify-tag --target "$GITHUB_SHA")
           if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-            --title "dsh-linux-desktop $version" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
-            artifacts/dsh-workbench-*-x64.deb artifacts/dsh-workbench-*-x64.rpm \
+            --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
+            artifacts/dsh-workbench-*-linux-x64.tar.gz artifacts/SHA256SUMS artifacts/build-info.json \
             artifacts/kernel-release/*.tgz artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json
           feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")
           git init --initial-branch=update-feed "$feed"

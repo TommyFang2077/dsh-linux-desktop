@@ -1,42 +1,14 @@
 import { BrowserWindow, ipcMain, dialog } from 'electron'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { UpdateManager } from './core.mjs'
 import { ensureMarket } from './market.mjs'
+import { detectUserDesktop, installUserDesktop } from './user-install.mjs'
 
 const execute = promisify(execFile)
-
-function authorizeInstall(args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/pkexec', args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', DISPLAY: process.env.DISPLAY ?? '',
-        XAUTHORITY: process.env.XAUTHORITY ?? '', LANG: process.env.LANG ?? 'C.UTF-8' },
-    })
-    let diagnostic = ''
-    child.stderr.on('data', bytes => { diagnostic = (diagnostic + bytes.toString()).slice(-16_384) })
-    child.once('error', reject)
-    // Never time out or kill a package manager halfway through a privileged transaction.
-    child.once('close', (code, signal) => code === 0 ? resolve()
-      : reject(new Error(`系统授权或安装失败 (${code ?? signal})：${diagnostic}`)))
-  })
-}
-
-async function installedFormat() {
-  for (const [format, command, args] of [
-    ['deb', '/usr/bin/dpkg-query', ['-W', '-f=${db:Status-Status}', 'dsh-workbench']],
-    ['rpm', '/usr/bin/rpm', ['-q', '--queryformat', '%{NAME}', 'dsh-workbench']],
-  ]) {
-    try {
-      const { stdout } = await execute(command, args, { timeout: 10_000 })
-      if ((format === 'deb' && stdout.trim() === 'installed') || (format === 'rpm' && stdout.trim() === 'dsh-workbench')) return format
-    } catch (error) { if (error.code !== 'ENOENT' && error.code !== 1) throw error }
-  }
-  throw new Error('当前不是系统安装版；请先手动安装 deb/rpm，再使用桌面更新')
-}
 
 /** Called once, before main selects dsh, WebUI and its support-runtime paths. */
 export async function createWorkbenchUpdates(options) {
@@ -49,6 +21,11 @@ export async function createWorkbenchUpdates(options) {
   if (typeof primaryRuntime.node !== 'string') throw new Error('桌面内核缺少自带 Node 版本信息')
   const extractionLifetime = new AbortController()
   app.on('will-quit', () => extractionLifetime.abort())
+  const userDesktop = await detectUserDesktop(process.execPath)
+  const extract = async (archive, destination, layout = 'kernel') => execute(process.execPath, [
+    '--max-old-space-size=256', join(app.getAppPath(), 'lib/workbench-archive.mjs'), archive, destination, layout,
+  ], { env: { PATH: '/usr/bin:/bin', ELECTRON_RUN_AS_NODE: '1' }, timeout: 180_000,
+    maxBuffer: 256 * 1024, signal: extractionLifetime.signal })
   const manager = new UpdateManager({
     root: join(app.getPath('userData'), 'updates'), config,
     desktop: { ...metadata, version: app.getVersion(), nodeVersion: primaryRuntime.node },
@@ -56,13 +33,7 @@ export async function createWorkbenchUpdates(options) {
       protocol: descriptor.release.hostProtocolVersion },
     verifyKernel: options.verifyKernel, probeKernel: options.probeKernel,
     onProgress: message => console.info(`dsh-workbench update: ${message}`),
-    extract: async (archive, destination) => {
-      await execute(process.execPath, ['--max-old-space-size=256',
-        join(app.getAppPath(), 'lib/workbench-archive.mjs'), archive, destination], {
-        env: { PATH: '/usr/bin:/bin', ELECTRON_RUN_AS_NODE: '1' },
-        timeout: 180_000, maxBuffer: 256 * 1024, signal: extractionLifetime.signal,
-      })
-    },
+    extract,
   })
   await manager.boot()
   const provisioning = new AbortController()
@@ -104,26 +75,21 @@ export async function createWorkbenchUpdates(options) {
       const version = manager.status()[channel].available
       if (!version) throw new Error('请先检查更新')
       const answer = await dialog.showMessageBox(window, {
-        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : '桌面端'}至 ${version}？`,
+        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : '桌面端'}至 ${version}${channel === 'desktop' ? `（Linux r${manager.status().desktop.availableLinuxRevision}）` : ''}？`,
         detail: channel === 'kernel'
           ? '下载并校验完整内核，在隔离目录试启动；确认停止当前任务后重启应用。不会安装桌面软件包。'
-          : '下载并校验桌面软件包，停止当前任务后通过系统授权弹窗安装。不会替换用户目录中的兼容新内核。',
+          : '下载并校验完整桌面归档，确认停止任务后切换 HOME 内的用户版本并重启。不需要 sudo，不替换兼容的新内核。',
         buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
       })
       if (answer.response !== 1) return { status: manager.status() }
       try {
         if (channel === 'kernel') await manager.installKernel(options.prepareRestart, options.restart)
         else {
-          const format = await installedFormat()
-          await manager.installDesktop(format, options.prepareRestart, async artifact => {
-            const helper = await fs.realpath(join(resources, 'install.py'))
-            const stat = await fs.stat(helper)
-            if (!helper.startsWith('/opt/dsh-workbench/') || stat.uid !== 0 || (stat.mode & 0o022)) {
-              throw new Error('提权安装器必须来自 root 所有、不可写的系统安装目录')
-            }
-            await authorizeInstall(['/usr/bin/python3', '-I', helper, artifact.path, artifact.format,
-              artifact.version, artifact.sha256, String(artifact.size)])
-          }, options.restart)
+          if (!userDesktop) throw new Error('请先用用户安装入口将桌面安装到 HOME；解包试运行或旧系统包不调用提权安装器')
+          await manager.installDesktop(options.prepareRestart, artifact => installUserDesktop({
+            ...artifact, root: userDesktop.root,
+            extract: (archive, destination) => extract(archive, destination, 'desktop'),
+          }), options.restart)
         }
       } catch (error) {
         await options.recover()

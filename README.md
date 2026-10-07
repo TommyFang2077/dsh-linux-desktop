@@ -1,24 +1,12 @@
 # dsh-linux-desktop
 
-仓库：[TommyFang2077/dsh-linux-desktop](https://github.com/TommyFang2077/dsh-linux-desktop)。软件包名、可执行文件及既有数据目录保留 `dsh-workbench`，避免影响已安装版本与用户配置。
+基于官方 [DeepSeek Harness Desktop](https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/desktop) 源码的**非官方 Electron Linux 用户版**，直接复用官方内核、WebUI、私有 Host 与插件管理。仓库：[TommyFang2077/dsh-linux-desktop](https://github.com/TommyFang2077/dsh-linux-desktop)。
 
-基于官方 [DeepSeek Harness Desktop](https://github.com/deepseek-ai/deepseek-harness/tree/master/apps/desktop) 的 **非官方 Electron Linux 桌面构建**，提供 x86_64 的 `.deb` 和 `.rpm`。直接复用官方主进程、WebUI、插件管理和 Host，不另写桌面壳。
-
-支持系统托盘、默认应用市场，以及相互独立的内核／桌面更新机制。GitHub Actions 为本项目的 Linux 内核包与桌面包生成签名更新源；配置签名 Secret 并首次发布后才能使用。本项目不连接官方 macOS/Windows 桌面更新渠道，也不属于官方发行版。
-
-官方内核源码版本和提交固定在 [`upstream.json`](upstream.json)，桌面版本及兼容范围独立保存在 [`desktop.json`](desktop.json)。当前基线为 `0.2.1-alpha.1` 开发预览版，可能存在破坏性变化。安装前阅读上游 [安全说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/SAFETY.md)。
+默认安装在 **`~/Applications/dsh-linux-desktop/`**，由当前用户所有，安装和桌面更新不需要 sudo，不使用 `/opt` 系统包安装。普通桌面归档不是 AppImage，只包含可解包的程序文件。软件包名、可执行文件、应用 ID 和既有配置身份仍保留 `dsh-workbench`，不会因为仓库改名或用户安装而重置数据。
 
 ## 构建
 
-需要 Linux x86_64、Node.js 22.19+ 或 24+（Node 23 不在支持范围内）、npm、Git、Python 3.11+、C/C++ 编译器、make、tar、`dpkg-deb`、`rpm` 和 `rpmbuild`。构建与测试不需要 root。
-
-Ubuntu/Debian 可安装构建工具及 Electron 系统库：
-
-```sh
-sudo apt install build-essential git python3 rpm dpkg-dev libgtk-3-0 libnss3 libxss1 libxtst6 libgbm1 libasound2 libatspi2.0-0 xdg-utils
-```
-
-Ubuntu 24.04 中 GTK、ALSA、AT-SPI 的对应包名为 `libgtk-3-0t64`、`libasound2t64`、`libatspi2.0-0t64`。Fedora 可使用 `gcc-c++ make git python3 rpm-build dpkg gtk3 nss libXScrnSaver libXtst mesa-libgbm alsa-lib at-spi2-core xdg-utils`。
+支持 Linux x86_64；构建需要 Node.js 24+、npm、Git、Python 3.11+、C/C++ 编译器、make 和 tar，默认不需要 dpkg/rpm/fpm。Electron 仍需要发行版的 GTK/NSS/GBM/ALSA 等图形库；归档自带应用所需的 Node/Python/Office 运行时，不另给用户安装宿主 Node/Python。
 
 ```sh
 make prepare
@@ -26,49 +14,59 @@ make test
 make package
 ```
 
-首次构建会下载固定官方源码、pnpm、npm 依赖、Electron，以及官方锁定的 Node/Python/Office 运行时。需要联网和数 GB 的可用空间；源码、依赖和中间产物放在忽略的 `build/` 中。
+官方内核源码由 `upstream.json` 固定；桌面版本和兼容范围独立保存在 `desktop.json`。桌面壳版本严格跟随所复用的官方壳源码，当前为 `0.2.1-alpha.1`，捆绑内核也为 `0.2.1-alpha.1` 开发预览版。Linux 适配单独使用 `linuxRevision`（当前 r1），不自行递增官方 alpha 编号；运行中的用户更新内核仍可独立升级。首次构建需要联网和数 GB 空间；生成的上游源码、依赖和中间产物在忽略的 `build/`，产物在 `dist/`：
 
-也可分阶段执行：
+- `dsh-workbench-<官方壳版本>-r<Linux构建号>-linux-x64.tar.gz`，唯一归档根为 `app/`
+- `SHA256SUMS`
+- `build-info.json`
 
-```sh
-make prepare                     # 下载源码、应用 Linux 补丁、安装锁定依赖
-make build                       # 编译官方桌面端和 WebUI
-python3 scripts/build.py package # 使用已有构建准备运行时并打包，不重新编译
-python3 scripts/build.py bundle  # 使用已准备的运行时重新生成安装包
-make verify                      # 核对两个安装包的身份、文件清单，生成 SHA256SUMS
-make run                         # 将 deb 临时解包到 /tmp 并运行，不安装到系统
-make gui-smoke                   # 可选：需要 Xvfb，使用隔离数据验证欢迎页 → 工作区
-```
-
-产物位于 `dist/`：`dsh-workbench-<version>-x64.deb`、`dsh-workbench-<version>-x64.rpm`、`SHA256SUMS` 和 `build-info.json`。打包始终在 Linux `/tmp` 下的私有目录暂存，校验完成后仅复制安装包到 `dist/`；因此源码目录位于 NTFS/exFAT 时，也不会将 `777` 权限写入安装包。打包命令会运行官方运行时检查与隔离数据目录的 Host 启动检查，拒绝非符号链接文件的组/其他用户可写权限，失败则停止，不将构建报告为验证通过。
-
-## 安装
+打包在 Linux `/tmp` 私有目录内完成，保留用户可写和执行权限、清除特权及组/其他用户写权限，拒绝链接、特殊文件和穿越路径；所以源码放在 NTFS/exFAT 也不会把不安全权限带进归档。打包仍运行真实 Host、100 次图片缩放、Office 转换和完整性检查。
 
 ```sh
-sudo apt install ./dist/dsh-workbench-0.2.1-alpha.1-x64.deb
-# 或在 Fedora/RHEL 系使用：
-sudo dnf install ./dist/dsh-workbench-0.2.1-alpha.1-x64.rpm
+make build                       # 编译官方桌面和 WebUI
+python3 scripts/build.py package # 复用已有编译，准备运行时与归档
+python3 scripts/build.py bundle  # 复用已准备的运行时生成归档
+make verify                      # 检查用户归档身份、权限、元数据和大小
+make run                         # 验证后在临时目录试运行，不注册用户入口
+make gui-smoke                   # 隔离 HOME 的真实窗口、图片和沙箱验证
 ```
 
-覆盖安装前先彻底退出正在运行的应用（新版可从托盘选择「退出」），不要只关闭窗口；安装完成后重新打开，避免继续使用被替换的旧进程。覆盖相同版本号的旧测试包时，使用 `apt install --reinstall ./包名.deb` 或 `dnf reinstall ./包名.rpm`。正式发布桌面更新前需单独提高 `desktop.json` 的版本；内核版本无需随之变化。
+## 安装在 HOME
 
-应用菜单名称和命令为 `dsh-workbench`，应用安装在 `/opt/dsh-workbench`。无需另装 Node、pnpm 或 Python；仍需发行版提供的 Electron 图形系统库。桌面程序不以 root 运行，不使用 `--no-sandbox`。
+**先验证来源，再执行下载的程序。** 对 CI 下载，核对仓库、提交和成功的 run，并按 GitHub artifact API 提供的 digest 验证下载 ZIP，再使用其中的 `SHA256SUMS` 验证桌面 tar；公开签名发行则使用固定受信公钥验证清单。未知来源的归档不能用它自己附带的校验值或运行时给自己背书。
 
-## Linux 适配范围
+下面的例子仅针对自己刚构建并校验的本地产物，或已经完成上述认证的归档。先在 `dist` 中检查摘要，再解包执行认证过的自带 Node 与安装入口；不需要 sudo：
 
-- [`patches/linux.patch`](patches/linux.patch) 补充官方准备脚本中的 Linux x64 目标及 Electron 可执行文件路径，保留官方运行时完整性检查、Host 启动和关闭流程。Linux 后端使用所选内核自带的独立 Node（当前基线为 24.21.0），不在 Electron Node 模式中加载 sharp；候选内核探测及失败回滚使用各自对应的 Node。打包检查覆盖 1×1 图片缩放、原生依赖、真实 Host 通信及正常退出，无需新增运行时依赖。
-- [`electron-builder.config.mjs`](electron-builder.config.mjs) 复用官方文件收集与校验钩子，增加 deb/rpm、独立包名、应用 ID、图标及系统依赖。Linux 使用普通应用目录而非 ASAR，避免 Electron 44 将不存在的原生 Office 包误判为已安装，并允许捆绑的 WASM 引擎正常回退、访问实际文件。
-- 使用独立的 `dsh-workbench` 名称和 Electron 配置目录，图标使用固定上游版本的 dsh 图案；`resources/dsh.ico` 提供 16–256px 多尺寸 ICO，Linux 菜单与应用窗口使用同源 512px PNG。
-- Linux 移除窗口顶部「应用 / Edit」菜单栏。系统托盘复用应用 PNG，提供「打开 dsh-workbench」和「退出 dsh-workbench」菜单；关闭主窗口后继续在后台运行，可从托盘或应用图标恢复。桌面环境需支持系统托盘；GNOME 需启用兼容 Electron 新注册格式的 AppIndicator/KStatusNotifierItem 扩展（例如官方 v66，Ubuntu 24.04 自带 v58 不兼容）。安装包不会自动修改桌面扩展。
-- 首次启动在官方管理的 `desktop` profile 中，通过官方插件管理器默认安装 `dshmarket 1.66.8` 应用市场（需要联网）。不强行豁免版本兼容检查；保留用户已有版本，用户之后卸载也不会再次强装。失败不阻塞桌面启动，更新窗口会显示提示，可在插件管理中重试。
-- 不默认安装 TUI、旧 Tauri 语音、ModLens 或预设扩展。当前社区 TUI `0.12.0` 被官方管理器判为不兼容内核 `0.2.1-alpha.1`，因此未强装。Harness 数据仍按官方逻辑存储于 `~/.dsh`，卸载桌面包不删除这些数据。
-- 普通插件安装在用户的 `~/.dsh/profiles/desktop`，不需要写入 `/opt`。`dsh-purge` 等直接修改内核文件的工具不等同于普通插件安装：系统内核由 root 管理，用户下载的内核也受完整性校验保护。定位环境变量只能解决路径识别，不能让运行期清洗安全生效；此类改动需要受支持的插件扩展点，或另行确认的构建阶段适配，并在修改后重新生成完整性描述与签名。
-- 不注册官方 `dsh://` 协议或系统 `dsh` 命令，不绑定官方桌面更新源或强制更新服务。「设置 → 通用 → 软件更新」分别管理内核和桌面版本：内核在用户目录校验、试启动、切换和失败回滚，桌面 deb/rpm 通过系统授权安装且不覆盖兼容的新内核。
-- 两个更新源已固定为本仓库 `update-feed` 分支的 HTTPS 签名清单与可信 Ed25519 公钥；首次发布前地址尚无清单。配置签名 Secret 后，GitHub Actions 从固定官方源码构建完整 Linux 内核和桌面 deb/rpm，分别签名；普通 `main` 推送或手动触发只生成 artifact，明确推送 `workbench-v<桌面版本>` 标签才发布 GitHub Release 并更新清单。配置、密钥保管和兼容性约束见 [独立更新说明](docs/updates.md)。
-- 仅支持 Linux x86_64。生产私钥保存在仓库外，需经授权配置 GitHub Actions Secret；构建脚本不自动上传产物或创建 Git tag。
+```sh
+(cd dist && sha256sum --check SHA256SUMS)
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r1-linux-x64.tar.gz"
+checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
+temporary=$(mktemp -d)
+tar -xzf "$archive" -C "$temporary"
+"$temporary/app/resources/runtime/primary-runtime/dependencies/node/bin/node" \
+  "$temporary/app/resources/app/workbench/install-user.mjs" \
+  --archive "$archive" --sha256 "$checksum" --version 0.2.1-alpha.1
+~/.local/bin/dsh-workbench
+```
+
+实际安装布局为 `~/Applications/dsh-linux-desktop/versions/<归档摘要>/`，`current` 原子指向当前版本，`previous` 保留上一版本。用户命令是 `~/.local/bin/dsh-workbench`，菜单入口在用户 applications 目录的 `dsh-workbench.desktop`；图标来自用户程序树，不依赖系统包。安装器拒绝覆盖已有的无关命令、自定义桌面入口或未管理目录。
+
+用户数据仍是既有 Electron `dsh-workbench` 配置目录和 `~/.dsh/profiles/desktop`，不会复制到程序版本目录，不会清空配置、会话或插件。首次迁移需要先完全退出旧应用，避免单实例锁把新入口转给旧进程。旧 `/opt` 系统包、系统命令和系统菜单入口不会被安装器改动；新用户版验证成功后，若需要卸载旧包，另行确认并执行包管理器操作。
+
+安装或更新失败、取消确认、同步重启失败不会改动当前入口；旧版本保留，可显式使用安装入口的 `--rollback` 回退。首次 Electron 无法启动的自动回滚守护进程暂不提供。中断安装可能留下 `.install-lock`，只能确认没有安装进程后手工清理该空锁目录。
+
+## 插件、桌面功能与更新
+
+- Linux 后端使用所选内核自带的独立 Node（当前 24.21.0），不在 Electron Node 模式加载 sharp；候选内核探测和回滚也使用各自的 Node。
+- Chromium 沙箱、上下文隔离和 Web 安全保持开启，不使用 `--no-sandbox`。系统不允许非特权 user namespace 时明确报错，不暗中修改安全策略。
+- 移除顶部「应用 / Edit」菜单栏；系统托盘保留打开/退出操作。GNOME 需要兼容 Electron 注册格式的 AppIndicator/KStatusNotifierItem 扩展，程序不自动修改扩展。
+- 首次启动通过官方插件管理器默认安装兼容的 `dshmarket 1.66.8`，保留用户已有版本、已卸载状态和配置；不会强装不兼容的 TUI。
+- 普通插件安装在用户 profile。Host 暴露所选内核的真实路径，但用户拥有文件**不代表** `dsh-purge` 的磁盘补丁已兼容完整性检查；本次不会自动清洗、关掉审批或文件沙箱、伪装官方客户端或修改外部插件配置。
+- 「设置 → 通用 → 软件更新」仍分内核和桌面：内核签名、兼容性、试启动和崩溃回滚逻辑不变；桌面更新安装用户归档、原子切换并明确重启到新 executable，不再执行 pkexec/apt/dnf，不把兼容的新内核降级。
+- 更新 URL 和 Ed25519 公钥保存在 `updates.json`。GitHub Actions 的 main/手动构建只生成 artifact；配置签名 Secret 且明确推送 `workbench-v<官方壳版本>-r<Linux构建号>` 标签才签名并公开发行。未首次发布前清单可能为 HTTP 404，不能称为自动更新已上线。详见 [更新说明](docs/updates.md)。
+
+所有上游改动保存在 `patches/linux.patch`；不直接修改已安装系统目录，不移动仓库外的生产签名密钥。GUI 是默认启动入口，不注册官方 `dsh://` 或占用系统 `dsh` 命令。
 
 ## 许可证
 
-DeepSeek 名称和图案归各自权利人所有；使用上游图标不代表本项目获得官方背书。图标原图来自固定上游源码的 `apps/desktop/resources/icon-windows.svg`。
-
-本项目构建脚本与 Linux 补丁采用 [MIT](LICENSE)。官方代码沿用上游 MIT 及第三方许可证；构建源码保留上游 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`，捆绑的 Node、Python、Electron 及依赖沿用各自许可证。本项目不是 DeepSeek 官方发行版。
+DeepSeek 名称与图案归各自权利人所有，复用图标不代表官方背书。本项目构建脚本和 Linux 补丁采用 [MIT](LICENSE)，官方代码及捆绑依赖保留原许可证和第三方声明。本项目不是 DeepSeek 官方发行版。
