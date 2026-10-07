@@ -25,6 +25,7 @@ ENV = {
     "DSH_DESKTOP_APP_ID": "io.github.tommyfang.DshWorkbench",
     "DSH_DESKTOP_TARGET_PLATFORM": "linux",
     "DSH_DESKTOP_TARGET_ARCH": "x64",
+    "DSH_DESKTOP_ELECTRON_VERSION": DESKTOP["electronVersion"],
 }
 
 
@@ -221,7 +222,7 @@ def verify(directory=None, require_installers=False):
             with package.open("rb") as stream:
                 checksums.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {package.name}\n")
     (directory / "SHA256SUMS").write_text("".join(checksums))
-    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "target": "linux-x64", "distribution": "deb-rpm-and-user-archive", "official": False}, indent=2) + "\n")
+    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "electronVersion": DESKTOP["electronVersion"], "target": "linux-x64", "distribution": "deb-rpm-and-user-archive", "official": False}, indent=2) + "\n")
 
 
 def main():

@@ -30,6 +30,26 @@ test('Linux x64 builds deb/rpm and keeps its independent identity with independe
   assert.deepEqual(config.protocols, [])
 })
 
+test('Linux pins the tested Electron runtime without changing the official shell version', () => {
+  const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
+  assert.equal(desktop.electronVersion, '44.5.1')
+  assert.equal(config.electronVersion, desktop.electronVersion)
+  const prepare = readFileSync(new URL('../build/upstream/apps/desktop/scripts/prepare-runtime.ts', import.meta.url), 'utf8')
+  const start = prepare.indexOf('  const { version: packageVersion }')
+  const end = prepare.indexOf('  const archive =', start)
+  assert.ok(start >= 0 && end > start)
+  const source = stripTypeScriptTypes(prepare.slice(start, end))
+  const select = (platform, electronVersion) => runInNewContext(`${source}; version`, {
+    platform, process: { env: { DSH_DESKTOP_ELECTRON_VERSION: electronVersion } },
+    require: () => ({ version: '44.0.0' }),
+  })
+  assert.equal(select('linux', desktop.electronVersion), desktop.electronVersion)
+  for (const platform of ['darwin', 'win32']) assert.equal(select(platform, desktop.electronVersion), '44.0.0')
+  for (const value of [undefined, '', '44.5.1/evil', '43.0.0']) {
+    assert.throws(() => select('linux', value), /Electron version/)
+  }
+})
+
 test('Linux creates the shared tray with its PNG and the existing open/quit actions', () => {
   const main = readFileSync(new URL('../build/upstream/apps/desktop/src/main.ts', import.meta.url), 'utf8')
   const start = main.indexOf('  const trayIconPath =')
@@ -61,6 +81,57 @@ test('Linux creates the shared tray with its PNG and the existing open/quit acti
       assert.equal(quit, 1)
     }
   }
+})
+
+test('tray smoke requires the running process and exact object path in the watcher', async () => {
+  const smoke = readFileSync(new URL('../scripts/gui-smoke.mjs', import.meta.url), 'utf8')
+  const start = smoke.indexOf('async function verifyTrayRegistration(')
+  const end = smoke.indexOf('\nconst root =', start)
+  assert.ok(start >= 0 && end > start, 'GUI smoke needs an opt-in real watcher check')
+  assert.match(smoke, /process\.argv\.includes\('--tray'\)/)
+  const check = items => runInNewContext(`${smoke.slice(start, end)}; verifyTrayRegistration`, {
+    assert, setTimeout: async () => {},
+    execFileSync: (_file, args) => {
+      assert.ok(args.includes('--session'))
+      if (args.includes('org.freedesktop.DBus.GetNameOwner')) {
+        assert.equal(args.at(-1), 'org.freedesktop.StatusNotifierItem-1234-1')
+        return "(':1.99',)"
+      }
+      return items
+    },
+  })(1234)
+  for (const items of ["(<['org.freedesktop.StatusNotifierItem-1234-1']>,)",
+    "(<[':1.99@/StatusNotifierItem']>,)", "(<[':1.99@/StatusNotifierItem/1']>,)", "(<[':1.99/StatusNotifierItem/1']>,)",
+    "(<['org.freedesktop.StatusNotifierItem-1234-1/StatusNotifierItem/1']>,)"]) {
+    await check(items)
+  }
+  for (const items of ["(<@as []>,)", "(<[':1.999@/StatusNotifierItem/1']>,)",
+    "(<[':1.99@/StatusNotifierItem/10']>,)"]) {
+    await assert.rejects(check(items), /AppIndicator.*v66/)
+  }
+})
+
+test('tray smoke retries a not-yet-owned service but preserves unrelated D-Bus failures', async () => {
+  const smoke = readFileSync(new URL('../scripts/gui-smoke.mjs', import.meta.url), 'utf8')
+  const start = smoke.indexOf('async function verifyTrayRegistration(')
+  const end = smoke.indexOf('\nconst root =', start)
+  let calls = 0
+  const absent = Object.assign(new Error('not owned yet'), {
+    stderr: 'org.freedesktop.DBus.Error.NameHasNoOwner',
+  })
+  const failure = new Error('watcher unavailable')
+  const check = error => runInNewContext(`${smoke.slice(start, end)}; verifyTrayRegistration`, {
+    assert, setTimeout: async () => {},
+    execFileSync: (_file, args) => {
+      if (calls++ === 0) throw error
+      return args.includes('org.freedesktop.DBus.GetNameOwner')
+        ? "(':1.99',)" : "(<['org.freedesktop.StatusNotifierItem-1234-1']>,)"
+    },
+  })(1234)
+  await check(absent)
+  assert.equal(calls, 3)
+  calls = 0
+  await assert.rejects(check(failure), error => error === failure)
 })
 
 test('Linux removes the native application menu instead of hiding its labels', () => {

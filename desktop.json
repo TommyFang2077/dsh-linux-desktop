@@ -1,10 +1,11 @@
 {
   "version": "0.2.1-alpha.1",
-  "linuxRevision": 2,
+  "linuxRevision": 3,
   "protocol": 4,
   "dataEpoch": "dsh-0.2.1-alpha.1",
   "desktopRange": ">=0.2.1-alpha.1 <0.3.0",
   "nodeRange": ">=24.18.1 <25.0.0",
   "nodeVersion": "24.21.0",
-  "kernelRange": ">=0.2.1-alpha.1 <0.3.0"
+  "kernelRange": ">=0.2.1-alpha.1 <0.3.0",
+  "electronVersion": "44.5.1"
 }

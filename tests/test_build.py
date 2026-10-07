@@ -126,6 +126,8 @@ class BuildTests(unittest.TestCase):
             info = json.loads((build.DIST / "build-info.json").read_text())
             self.assertEqual(info["desktopVersion"], build.LOCK["version"])
             self.assertEqual(info["linuxRevision"], build.DESKTOP["linuxRevision"])
+            self.assertEqual(info["electronVersion"], build.DESKTOP["electronVersion"])
+            self.assertEqual(build.ENV["DSH_DESKTOP_ELECTRON_VERSION"], build.DESKTOP["electronVersion"])
 
     def test_default_packaging_does_not_require_system_package_tools(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(build, "APP", Path(directory)), patch.object(build, "pnpm"), patch.object(build, "bundle") as bundle, patch.object(build.shutil, "which", return_value=None) as which:

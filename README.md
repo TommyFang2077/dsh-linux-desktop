@@ -16,7 +16,7 @@ make test
 make package
 ```
 
-官方内核源码由 `upstream.json` 固定；桌面版本和兼容范围独立保存在 `desktop.json`。桌面壳版本严格跟随所复用的官方壳源码，当前为 `0.2.1-alpha.1`，捆绑内核也为 `0.2.1-alpha.1` 开发预览版。Linux 适配单独使用 `linuxRevision`（当前 r2），不自行递增官方 alpha 编号；运行中的用户更新内核仍可独立升级。首次构建需要联网和数 GB 空间；生成的上游源码、依赖和中间产物在忽略的 `build/`，产物在 `dist/`：
+官方内核源码由 `upstream.json` 固定；桌面版本和兼容范围独立保存在 `desktop.json`。桌面壳版本严格跟随所复用的官方壳源码，当前为 `0.2.1-alpha.1`，捆绑内核也为 `0.2.1-alpha.1` 开发预览版。Linux 适配单独使用 `linuxRevision`（当前 r3），不自行递增官方 alpha 编号；运行中的用户更新内核仍可独立升级。首次构建需要联网和数 GB 空间；生成的上游源码、依赖和中间产物在忽略的 `build/`，产物在 `dist/`：
 
 - `dsh-workbench-<官方壳版本>-r<Linux构建号>-linux-x64.tar.gz`，唯一归档根为 `app/`
 - `dsh-workbench-<官方壳版本>-r<Linux构建号>-linux-x64.deb` / `.rpm`
@@ -42,7 +42,7 @@ make gui-smoke                   # 隔离 HOME 的真实窗口、图片和沙箱
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r2-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r3-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"
@@ -65,14 +65,47 @@ tar -xzf "$archive" -C "$temporary"
 GitHub Actions 在推送 `main` 或手动触发时构建 deb、rpm 和用户归档，成功 run 的 `linux-updates-<commit>` artifact 包含三种产物、摘要和构建信息。下载后先核对来源与提交，并执行 `sha256sum --check SHA256SUMS`。系统安装示例（选择本发行版格式）：
 
 ```sh
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.deb
+sudo apt install ./dsh-workbench-0.2.1-alpha.1-r3-linux-x64.deb
 # 或 Fedora / RHEL 系：
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r2-linux-x64.rpm
+sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r3-linux-x64.rpm
 ```
 
-deb 版本为 `0.2.1~alpha.1-2`，rpm 为 `0.2.1~alpha.1`、Release `2`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
+deb 版本为 `0.2.1~alpha.1-3`，rpm 为 `0.2.1~alpha.1`、Release `3`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
 
 系统版在「设置 → 通用 → 软件更新」下载同一签名清单中的对应 deb/rpm，验证摘要、身份、架构和 Linux 构建号，再通过 pkexec 调用 root 所有且不可被普通用户修改的安装器及包管理器。旧客户端若不支持当前清单格式，需要先手动安装本次包。没有签名 Secret/公开发行时，CI artifact 可手动安装，但不能宣称在线升级已上线。
+
+## Fedora / GNOME：RPM 已安装但没有托盘
+
+Linux r3 将打包运行时固定为 **Electron 44.5.1**，不再使用上游锁文件中的 44.0.0；官方桌面壳版本仍是 `0.2.1-alpha.1`，内核更新及用户数据不变。本地同一旧 GNOME watcher 的最小测试中，44.0.0 未进入托盘列表，44.5.1 以兼容的服务名注册成功。优先使用重建的 r3 包，无需为了应用自动改动系统扩展；Fedora 真机图标和菜单仍须单独验证。
+
+如果日志出现下面的错误，问题是 watcher 不认识 Electron 44.0.0 的「服务名＋对象路径」注册格式，**不是 PNG 丢失，也不是切换 Wayland / X11 能解决的问题**：
+
+```text
+Impossible to register an indicator for parameters
+'org.freedesktop.StatusNotifierItem-<PID>-1/StatusNotifierItem/1'
+```
+
+AppIndicator 上游的 [v66](https://github.com/ubuntu/gnome-shell-extension-appindicator/tree/v66) 已包含[注册解析修复](https://github.com/ubuntu/gnome-shell-extension-appindicator/commit/0de8ba157b1f79ad3a1c88f0422d8ccadeb8ebed)；v65 没有该修复。使用支持当前 GNOME Shell 的 v66 或发行版回移植了该修复的扩展，**只启用一个托盘扩展**。仅显示「扩展已启用」不能证明新版 watcher 正在运行。
+
+先检查版本和已启用的扩展：
+
+```sh
+gnome-shell --version
+gnome-extensions list --enabled
+rpm -q gnome-shell-extension-appindicator
+gnome-extensions info appindicatorsupport@rgcjonas.gmail.com
+```
+
+Fedora 系统包可先执行 `sudo dnf upgrade gnome-shell-extension-appindicator`，然后核对是否包含上述修复；不能假定仓库中的包一定已修复。如果没有，用 GNOME 扩展管理器安装适配当前 Shell 的新版 **AppIndicator and KStatusNotifierItem Support**，关闭旧的同类扩展。扩展切换后**注销并重新登录桌面**，完全退出并重新启动 DSH；Wayland 下不要用 Alt+F2 → r 替代注销。程序和 RPM 安装脚本不会替用户修改扩展，也不为此降级 Electron。
+
+仓库中的实际注册检查（需要在目标 GNOME 登录会话内运行，不能拿 Xvfb 的普通 GUI 通过结果代替）：
+
+```sh
+DSH_WORKBENCH_TEST_APP=/opt/dsh-workbench/dsh-workbench \
+  node scripts/gui-smoke.mjs --tray
+```
+
+该检查使用临时 HOME，不改既有配置或会话，要求当前进程的服务名或其精确对象路径出现在 watcher 的 `RegisteredStatusNotifierItems` 中；未注册会明确失败。注册检查通过后，仍需人工确认图标可见、「打开」能恢复窗口、「退出」能结束应用，才算目标机器托盘修复完成。
 
 ## 插件、桌面功能与更新
 

@@ -33,6 +33,7 @@ export default {
   ...config,
   // Linux Office uses WASM workers; real paths avoid Electron 44 ASAR's missing-file stat bug.
   asar: false,
+  electronVersion: desktop.electronVersion,
   buildNumber: String(desktop.linuxRevision),
   productName: 'dsh-workbench',
   artifactName: `dsh-workbench-\${version}-r${desktop.linuxRevision}-linux-x64.\${ext}`,

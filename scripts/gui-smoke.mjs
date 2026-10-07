@@ -8,6 +8,33 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
+/** Opt-in: requires the real session watcher, not just a constructed Electron Tray. */
+async function verifyTrayRegistration(pid) {
+  const service = `org.freedesktop.StatusNotifierItem-${pid}-1`
+  const call = (destination, path, method, ...args) => execFileSync('gdbus', [
+    'call', '--session', '--dest', destination, '--object-path', path, '--method', method, ...args,
+  ], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] })
+  for (let attempt = 0; attempt < 100; attempt++) {
+    let owner
+    try {
+      owner = call('org.freedesktop.DBus', '/org/freedesktop/DBus',
+        'org.freedesktop.DBus.GetNameOwner', service).match(/'(:[0-9]+\.[0-9]+)'/u)?.[1]
+    } catch (error) {
+      if (!String(error.stderr).includes('org.freedesktop.DBus.Error.NameHasNoOwner')) throw error
+      await setTimeout(100)
+      continue
+    }
+    assert.ok(owner, 'Electron must own its StatusNotifierItem service')
+    const expected = new Set([service, `${owner}@/StatusNotifierItem`, `${owner}/StatusNotifierItem`,
+      `${owner}@/StatusNotifierItem/1`, `${owner}/StatusNotifierItem/1`, `${service}/StatusNotifierItem/1`])
+    const registered = call('org.kde.StatusNotifierWatcher', '/StatusNotifierWatcher',
+      'org.freedesktop.DBus.Properties.Get', 'org.kde.StatusNotifierWatcher', 'RegisteredStatusNotifierItems')
+    if ([...registered.matchAll(/'([^']+)'/gu)].some(([, item]) => expected.has(item))) return
+    await setTimeout(100)
+  }
+  assert.fail('Tray not registered: use the tested Linux runtime or GNOME AppIndicator v66 / its parser backport; see README')
+}
+
 const root = resolve(import.meta.dirname, '..')
 const require = createRequire(import.meta.url)
 const { _electron } = require(require.resolve('playwright-core', {
@@ -52,9 +79,11 @@ try {
   })
   application.process().stderr.on('data', data => process.stderr.write(data))
   const identity = await application.evaluate(({ app }) => ({
-    name: app.getName(), data: app.getPath('userData'), noSandbox: app.commandLine.hasSwitch('no-sandbox'),
+    name: app.getName(), data: app.getPath('userData'), electron: process.versions.electron, noSandbox: app.commandLine.hasSwitch('no-sandbox'),
   }))
   assert.equal(identity.name, 'dsh-workbench')
+  console.log('Desktop Electron runtime:', identity.electron)
+  assert.equal(identity.electron, JSON.parse(readFileSync(join(root, 'desktop.json'), 'utf8')).electronVersion)
   assert.equal(identity.noSandbox, false)
   assert.ok(identity.data.startsWith(temporary))
   let welcome
@@ -65,6 +94,10 @@ try {
   assert.ok(welcome, 'The welcome window must load')
   const expectedNode = join(dirname(executable), 'resources/runtime/primary-runtime/dependencies/node/bin/node')
   const mainPid = application.process().pid
+  if (process.argv.includes('--tray')) {
+    await verifyTrayRegistration(mainPid)
+    console.log('Tray registered in the session watcher; visual/menu verification still required')
+  }
   const backendPid = readdirSync('/proc').find(pid => {
     if (!/^\d+$/u.test(pid)) return false
     try {
