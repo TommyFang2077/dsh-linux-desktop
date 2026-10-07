@@ -39,6 +39,10 @@ export function verifyFeed(envelope, publicKey, channel) {
     || typeof release.dataEpoch !== 'string' || !/^[a-zA-Z0-9._-]{1,80}$/.test(release.dataEpoch)
     || !range(release.desktopRange) || !range(release.nodeRange)) fail('更新元数据无效或平台不匹配')
   const assets = [release.asset]
+  if (channel === 'desktop' && release.assets !== undefined) {
+    if (!object(release.assets)) fail('桌面安装包列表无效')
+    assets.push(release.assets.deb, release.assets.rpm)
+  }
   if (channel === 'desktop' && release.format !== 'tar.gz') fail('不支持的用户桌面归档格式')
   for (const asset of assets) {
     if (!object(asset) || !digest(asset.sha256) || !Number.isSafeInteger(asset.size)
@@ -365,7 +369,7 @@ export class UpdateManager {
     })
   }
 
-  async installDesktop(prepareRestart, install, restart) {
+  async installDesktop(prepareRestart, install, restart, format = 'tar.gz') {
     return this.exclusive(async () => {
       if (this.state.pending) fail('请先完成内核重启，再更新桌面端')
       const { release } = this.candidates.desktop ?? fail('请先检查桌面更新')
@@ -373,10 +377,11 @@ export class UpdateManager {
         dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
       const directory = await fs.mkdtemp(join(this.root, '.desktop-'))
       try {
-        const asset = release.asset
-        const path = join(directory, 'desktop.tar.gz')
+        if (!['tar.gz', 'deb', 'rpm'].includes(format)) fail('未知桌面安装格式')
+        const asset = (format === 'tar.gz' ? release.asset : release.assets?.[format]) ?? fail('此发行缺少对应桌面安装包')
+        const path = join(directory, `desktop.${format}`)
         await this.download(asset, path)
-        const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision,
+        const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision, format, size: asset.size,
           sha256: asset.sha256, prepareRestart, restart })
         return result !== null
       } finally { await fs.rm(directory, { recursive: true, force: true }) }

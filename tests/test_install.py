@@ -35,9 +35,18 @@ class InstallTests(unittest.TestCase):
     def test_identity_check_rejects_another_package(self):
         execute = Mock(side_effect=["unrelated-package", "1.2.0", "amd64"])
         with self.assertRaisesRegex(ValueError, "identity"):
-            install.verify_identity(Path("/tmp/package.deb"), "deb", "1.2.0", execute)
-        rpm = Mock(return_value="dsh-workbench\n1.2.0~rc.1\nx86_64")
-        install.verify_identity(Path("/tmp/package.rpm"), "rpm", "1.2.0-rc.1", rpm)
+            install.verify_identity(Path("/tmp/package.deb"), "deb", "1.2.0", 2, execute)
+        rpm = Mock(return_value="dsh-workbench\n1.2.0~rc.1\n2\nx86_64")
+        install.verify_identity(Path("/tmp/package.rpm"), "rpm", "1.2.0-rc.1", 2, rpm)
+
+    def test_identity_includes_linux_revision_for_both_formats(self):
+        deb = Mock(side_effect=["dsh-workbench", "1.2.0~rc.1-2", "amd64"])
+        install.verify_identity(Path("/tmp/package.deb"), "deb", "1.2.0-rc.1", 2, deb)
+        for format, fields in [("deb", ["dsh-workbench", "1.2.0~rc.1-1", "amd64"]),
+                               ("rpm", "dsh-workbench\n1.2.0~rc.1\n1\nx86_64")]:
+            execute = Mock(side_effect=fields) if format == "deb" else Mock(return_value=fields)
+            with self.assertRaisesRegex(ValueError, "identity"):
+                install.verify_identity(Path("/tmp/package"), format, "1.2.0-rc.1", 2, execute)
 
     def test_install_uses_absolute_system_tools_without_a_shell(self):
         path = Path("/var/tmp/private dir/package.deb")

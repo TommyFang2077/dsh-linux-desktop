@@ -20,9 +20,14 @@ test('CI builds with read permission and publishes only explicit release tags, n
   assert.equal(workflow.jobs.build.steps.find(step => step.name === 'Sign independent kernel and desktop feeds').if, "env.HAS_SIGNING_KEY == 'true'")
   const upload = workflow.jobs.build.steps.find(step => step.uses === 'actions/upload-artifact@v4')
   assert.doesNotMatch(upload.with.path, /pem|key|RUNNER_TEMP/)
+  for (const format of ['deb', 'rpm', 'tar.gz']) assert.ok(upload.with.path.includes(`linux-x64.${format}`))
+  const sign = workflow.jobs.build.steps.find(step => step.name === 'Sign independent kernel and desktop feeds').run
+  assert.match(sign, /--deb /)
+  assert.match(sign, /--rpm /)
   const publish = workflow.jobs.publish.steps.find(step => step.run?.includes('gh release create')).run
   assert.ok(publish.indexOf('gh release create') < publish.indexOf('git -C "$feed" add'))
   assert.doesNotMatch(publish, /--force|--clobber/)
+  for (const format of ['deb', 'rpm', 'tar.gz']) assert.ok(publish.includes(`linux-x64.${format}`))
 })
 
 test('CI preflight validates feeds, permits unsigned branch builds and refuses release tags without signing keys', () => {

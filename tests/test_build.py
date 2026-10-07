@@ -151,6 +151,13 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "compatibility metadata differs"):
                     build.bundle()
 
+    def test_required_system_packages_cannot_be_silently_missing(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "DIST", Path(directory)):
+            self.archive(build.DIST)
+            with self.assertRaisesRegex(RuntimeError, "installer"):
+                build.verify(require_installers=True)
+            self.assertFalse((build.DIST / "SHA256SUMS").exists())
+
     def test_source_is_pinned_not_a_moving_branch(self):
         self.assertRegex(build.LOCK["commit"], r"^[0-9a-f]{40}$")
         self.assertEqual(build.LOCK["repository"], "https://github.com/deepseek-ai/deepseek-harness.git")

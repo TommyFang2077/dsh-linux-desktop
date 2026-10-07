@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a user-owned Linux desktop archive from pinned official sources."""
+"""Build Linux deb/rpm packages and a user-owned desktop archive from pinned official sources."""
 
 import argparse
 import hashlib
@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import runpy
 import shutil
 import subprocess
 import tarfile
@@ -120,14 +121,15 @@ def bundle():
         shutil.copyfile(ROOT / "build/icon.png", output / "icon.png")
         (output / "icon.png").chmod(0o644)
         pnpm("exec", "electron-builder", "--config", ROOT / "electron-builder.config.mjs",
-             "--linux", "--dir", "--x64", "--publish", "never", cwd=APP, env=env)
+             "--linux", "deb", "rpm", "--x64", "--publish", "never", cwd=APP, env=env)
         pnpm("exec", "tsx", ROOT / "scripts/smoke.mts", env=env)
         with tarfile.open(desktop_archive(output), "w:gz", compresslevel=1) as archive:
             archive.add(output / "linux-unpacked", arcname="app", filter=archive_entry)
-        verify(output)
+        verify(output, require_installers=True)
         DIST.mkdir(exist_ok=True)
-        for name in (desktop_archive(output).name, "SHA256SUMS", "build-info.json"):
-            shutil.copyfile(output / name, DIST / name)
+        for file in (desktop_archive(output), *output.glob("*.deb"), *output.glob("*.rpm"),
+                     output / "SHA256SUMS", output / "build-info.json"):
+            shutil.copyfile(file, DIST / file.name)
 
 
 def verify_archive(file, destination=None):
@@ -195,15 +197,31 @@ def launch():
         run(Path(directory) / "app/dsh-workbench", cwd=ROOT)
 
 
-def verify(directory=None):
+def verify_package(file, format):
+    if file.is_symlink() or not file.is_file() or not 0 < file.stat().st_size <= 1024 ** 3:
+        raise RuntimeError("A regular, bounded installer is required")
+    helper = runpy.run_path(str(ROOT / "updates/install.py"))
+    def execute(args, **kwargs):
+        return subprocess.check_output([shutil.which(Path(args[0]).name) or args[0], *args[1:]], **kwargs)
+    helper["verify_identity"](file, format, DESKTOP["version"], DESKTOP["linuxRevision"], execute)
+
+
+def verify(directory=None, require_installers=False):
     directory = DIST if directory is None else Path(directory)
     file = desktop_archive(directory)
     verify_archive(file)
     with file.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     print(f"Verified {file.name} ({file.stat().st_size:,} bytes)")
-    (directory / "SHA256SUMS").write_text(f"{digest}  {file.name}\n")
-    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "target": "linux-x64", "distribution": "user-archive", "official": False}, indent=2) + "\n")
+    checksums = [f"{digest}  {file.name}\n"]
+    for format in ("deb", "rpm"):
+        package = directory / f"dsh-workbench-{DESKTOP['version']}-r{DESKTOP['linuxRevision']}-linux-x64.{format}"
+        if require_installers or package.exists():
+            verify_package(package, format)
+            with package.open("rb") as stream:
+                checksums.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {package.name}\n")
+    (directory / "SHA256SUMS").write_text("".join(checksums))
+    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "target": "linux-x64", "distribution": "deb-rpm-and-user-archive", "official": False}, indent=2) + "\n")
 
 
 def main():

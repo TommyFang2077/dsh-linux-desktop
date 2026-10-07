@@ -8,24 +8,25 @@ import { stripTypeScriptTypes } from 'node:module'
 import config, { hardenPermissions } from '../electron-builder.config.mjs'
 import { desktopTargetPlatform, resolveDesktopBuildTarget } from '../build/upstream/apps/desktop/scripts/desktop-build-paths.mjs'
 
-test('Linux x64 defaults to a user-owned directory artifact with independent identity', () => {
+test('Linux x64 builds deb/rpm and keeps its independent identity with independent identity', () => {
   assert.equal(resolveDesktopBuildTarget({}, 'linux', 'x64'), 'linux-x64')
   assert.deepEqual(desktopTargetPlatform('linux-x64'), { platform: 'linux', arch: 'x64' })
   assert.throws(() => resolveDesktopBuildTarget({}, 'linux', 'arm64'), /unsupported target/)
-  assert.deepEqual(config.linux.target, ['dir'])
+  assert.deepEqual(config.linux.target, ['deb', 'rpm'])
   assert.equal(config.linux.executableName, 'dsh-workbench')
   assert.equal(config.extraMetadata.name, 'dsh-workbench')
   assert.equal(config.extraMetadata.desktopName, 'dsh-workbench.desktop')
   assert.equal(config.linux.syncDesktopName, true)
-  assert.equal(config.artifactName, 'dsh-workbench-${version}-r${linuxRevision}-linux-x64.${ext}')
+  assert.equal(config.artifactName, `dsh-workbench-\${version}-r${config.extraMetadata.linuxRevision}-linux-x64.\${ext}`)
   assert.equal(config.extraMetadata.version, JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')).version)
-  assert.equal(config.extraMetadata.linuxRevision, 1)
+  assert.equal(config.extraMetadata.linuxRevision, JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8')).linuxRevision)
+  assert.equal(config.buildNumber, String(config.extraMetadata.linuxRevision))
   assert.equal(config.appId, 'io.github.tommyfang.DshWorkbench')
   assert.equal(config.extraMetadata.dshMandatoryUpdatePolicy, undefined)
   assert.equal(config.publish, null)
   assert.equal(config.asar, false)
-  assert.equal(config.deb, undefined)
-  assert.equal(config.rpm, undefined)
+  assert.ok(config.deb.depends.includes('pkexec'))
+  assert.ok(config.rpm.depends.includes('dnf'))
   assert.deepEqual(config.protocols, [])
 })
 

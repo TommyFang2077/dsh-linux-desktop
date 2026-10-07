@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createPrivateKey, createPublicKey, createHash, sign } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
@@ -10,11 +11,11 @@ const root = resolve(import.meta.dirname, '..')
 const { positionals, values } = parseArgs({ allowPositionals: true, options: {
   input: { type: 'string' }, output: { type: 'string' }, key: { type: 'string' },
   'base-url': { type: 'string' }, archive: { type: 'string' },
-  metadata: { type: 'string' },
+  metadata: { type: 'string' }, deb: { type: 'string' }, rpm: { type: 'string' },
 } })
 const channel = positionals[0]
 if (!['kernel', 'desktop'].includes(channel) || !values.key || !values.output || !values['base-url']) {
-  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel] [--archive desktop.tar.gz] [--metadata desktop.json]')
+  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel] [--archive desktop.tar.gz --deb desktop.deb --rpm desktop.rpm] [--metadata desktop.json]')
 }
 const keyPath = resolve(values.key)
 const keyStat = await fs.stat(keyPath)
@@ -50,15 +51,23 @@ if (channel === 'kernel') {
     release = { ...release, asset: await asset(archive), manifestSha256: createHash('sha256').update(manifest).digest('hex') }
   } finally { await fs.rm(staging, { recursive: true, force: true }) }
 } else {
-  if (!values.archive || !metadata.kernelRange || !metadata.nodeVersion) {
-    throw new Error('Desktop feed requires --archive and desktop kernelRange/nodeVersion metadata')
+  if (!values.archive || !values.deb || !values.rpm || !metadata.kernelRange || !metadata.nodeVersion) {
+    throw new Error('Desktop feed requires --archive, --deb, --rpm and desktop kernelRange/nodeVersion metadata')
   }
+  const expected = metadata.version.replaceAll('-', '~')
+  const deb = ['Package', 'Version', 'Architecture'].map(field => execFileSync('dpkg-deb', ['--field', resolve(values.deb), field], { encoding: 'utf8' }).trim())
+  const rpm = execFileSync('rpm', ['-qp', '--queryformat', '%{NAME}\\n%{VERSION}\\n%{RELEASE}\\n%{ARCH}', resolve(values.rpm)], { encoding: 'utf8' }).trim().split('\n')
+  if (JSON.stringify(deb) !== JSON.stringify(['dsh-workbench', `${expected}-${metadata.linuxRevision}`, 'amd64'])
+    || JSON.stringify(rpm) !== JSON.stringify(['dsh-workbench', expected, String(metadata.linuxRevision), 'x86_64'])) {
+    throw new Error('Installer identity/version/revision/architecture differs from signing metadata')
+  }
+  const installers = { deb: await asset(resolve(values.deb)), rpm: await asset(resolve(values.rpm)) }
   const staging = await fs.mkdtemp('/tmp/dsh-desktop-signing-')
   try {
     await extractDesktop(resolve(values.archive), staging)
     const actual = await verifyUserDesktop(join(staging, 'app'), metadata.version)
     if (JSON.stringify(actual) !== JSON.stringify(metadata)) throw new Error('Desktop archive metadata differs from signing metadata')
-    release = { ...release, format: 'tar.gz', asset: await asset(resolve(values.archive)) }
+    release = { ...release, format: 'tar.gz', asset: await asset(resolve(values.archive)), assets: installers }
   } finally { await fs.rm(staging, { recursive: true, force: true }) }
 }
 const payload = Buffer.from(JSON.stringify(release))

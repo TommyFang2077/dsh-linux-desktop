@@ -49,7 +49,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git python3 libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
+          sudo apt-get install -y build-essential git python3 rpm libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
       - name: Prepare, test and package official Linux sources
         run: |
           make prepare
@@ -84,6 +84,8 @@ jobs:
             --metadata desktop.json --output dist/kernel-release --key "$key" --base-url "$base"
           node build/release-updates.mjs desktop \
             --archive "dist/dsh-workbench-$version-r$revision-linux-x64.tar.gz" \
+            --deb "dist/dsh-workbench-$version-r$revision-linux-x64.deb" \
+            --rpm "dist/dsh-workbench-$version-r$revision-linux-x64.rpm" \
             --metadata desktop.json --output dist/desktop-release --key "$key" --base-url "$base"
       - uses: actions/upload-artifact@v4
         with:
@@ -93,6 +95,8 @@ jobs:
           if-no-files-found: error
           path: |
             dist/dsh-workbench-*-linux-x64.tar.gz
+            dist/dsh-workbench-*-linux-x64.deb
+            dist/dsh-workbench-*-linux-x64.rpm
             dist/SHA256SUMS
             dist/build-info.json
             dist/kernel-release/
@@ -127,7 +131,7 @@ jobs:
           if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
             --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
-            artifacts/dsh-workbench-*-linux-x64.tar.gz artifacts/SHA256SUMS artifacts/build-info.json \
+            artifacts/dsh-workbench-*-linux-x64.tar.gz artifacts/dsh-workbench-*-linux-x64.deb artifacts/dsh-workbench-*-linux-x64.rpm artifacts/SHA256SUMS artifacts/build-info.json \
             artifacts/kernel-release/*.tgz artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json
           feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")
           git init --initial-branch=update-feed "$feed"

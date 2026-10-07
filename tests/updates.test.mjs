@@ -397,3 +397,36 @@ test('unconfigured sources, HTTP and downgraded releases never produce an instal
   f.options.config.kernel = { url: 'http://updates.test/kernel', publicKey }
   await assert.rejects(f.manager.check('kernel'), /HTTPS/)
 })
+
+test('signed deb/rpm downloads select exactly the requested format and preserve kernel state', async t => {
+  for (const format of ['deb', 'rpm']) {
+    const f = await fixture(t)
+    const bytes = Buffer.from(`verified ${format}`)
+    const asset = { url: `https://updates.test/desktop.${format}`, size: bytes.length, sha256: sha(bytes) }
+    const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+      version: '1.2.0', linuxRevision: 2, nodeVersion: '24.18.1', kernelRange: '>=1 <2',
+      asset: { ...asset, url: 'https://updates.test/unused.tar.gz' }, assets: { deb: asset, rpm: asset } }
+    f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(release))))
+    f.responses.set(asset.url, bytes)
+    await f.manager.check('desktop')
+    const before = JSON.stringify(f.manager.state)
+    let restarted = false
+    await f.manager.installDesktop(async () => true, async artifact => {
+      assert.equal(artifact.format, format)
+      assert.equal(artifact.linuxRevision, 2)
+      assert.equal(artifact.size, bytes.length)
+      assert.deepEqual(await fs.readFile(artifact.archive), bytes)
+      if (!await artifact.prepareRestart()) return null
+      await artifact.restart('/opt/dsh-workbench/dsh-workbench')
+      return { executable: '/opt/dsh-workbench/dsh-workbench' }
+    }, executable => { assert.equal(executable, '/opt/dsh-workbench/dsh-workbench'); restarted = true }, format)
+    assert.equal(restarted, true)
+    assert.equal(JSON.stringify(f.manager.state), before)
+    const invalid = { ...release, assets: { deb: asset, rpm: { ...asset, size: 0 } } }
+    assert.throws(() => verifyFeed(signed(invalid), publicKey, 'desktop'), /大小/)
+    const archiveOnly = { ...release, assets: undefined }
+    f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(archiveOnly))))
+    await f.manager.check('desktop')
+    await assert.rejects(f.manager.installDesktop(() => assert.fail(), () => assert.fail(), () => assert.fail(), format), /缺少/)
+  }
+})
