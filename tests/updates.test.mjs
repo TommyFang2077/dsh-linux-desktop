@@ -345,14 +345,19 @@ test('Linux revisions order desktop rebuilds without changing or downgrading off
   assert.equal(f.manager.status().desktop.available, f.manager.desktop.version)
   assert.equal(f.manager.status().desktop.availableLinuxRevision, 3)
   assert.equal(f.manager.status().desktop.linuxRevision, 2)
+  assert.equal(f.manager.status().desktop.latest, release.version)
+  assert.equal(f.manager.status().desktop.latestLinuxRevision, 3)
   for (const candidate of [{ ...release, linuxRevision: 2 }, { ...release, linuxRevision: 1 },
     { ...release, version: '1.1.0', linuxRevision: 100 }]) {
     feed(candidate)
     await f.manager.check('desktop')
     assert.equal(f.manager.status().desktop.available, null)
+    assert.equal(f.manager.status().desktop.latest, candidate.version)
+    assert.equal(f.manager.status().desktop.latestLinuxRevision, candidate.linuxRevision)
   }
   feed({ ...release, linuxRevision: -1 })
   await assert.rejects(f.manager.check('desktop'), /构建号/)
+  assert.equal(f.manager.status().desktop.latest, null)
 })
 
 test('desktop authorization/installer failure preserves kernel state and cleans the download', async t => {
@@ -429,4 +434,16 @@ test('signed deb/rpm downloads select exactly the requested format and preserve 
     await f.manager.check('desktop')
     await assert.rejects(f.manager.installDesktop(() => assert.fail(), () => assert.fail(), () => assert.fail(), format), /缺少/)
   }
+})
+
+test('asset downloads allow ten minutes while manifest requests retain the two-minute bound', async t => {
+  const f = await fixture(t)
+  const timeouts = []
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    timeouts.push(milliseconds)
+    return new AbortController().signal
+  })
+  await f.manager.check('kernel')
+  await f.manager.download(f.release.asset, join(f.root, 'bounded-download.tgz'))
+  assert.deepEqual(timeouts, [120_000, 600_000])
 })

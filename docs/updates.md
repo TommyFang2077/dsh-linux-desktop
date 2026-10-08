@@ -11,6 +11,12 @@
 
 “官方内核”指固定官方源码的本项目 Linux 构建，不是官方托管的 Linux OTA。已核对的官方渠道没有这里所需的独立 Linux 内核签名载荷；仅安装 npm dsh 不包含完整桌面私有 Host 与支持运行时。
 
+## 设置中的版本检查
+
+通用设置分别读取当前实际选用的内核、桌面壳版本与 Linux 构建号，并自动检查两条独立签名清单。最新发布与可安装更新分别表示：相同或更旧的发布仍显示其签名版本，但不会变为升级候选；协议或数据不兼容时显示错误，不绕过兼容检查。单个通道失败不隐藏另一通道结果，可以重试检查。
+
+归档由独立、内存受限的子进程通过原生文件系统解包，避免 Electron ASAR 虚拟路径截获；桌面产物不含无用的默认 ASAR 程序，使已发布的旧更新器也能解包。重启先安排新程序路径，待安装器、暂存目录及安装锁完成清理后才退出进程；取消或失败不退出。清单请求限制两分钟，完整载荷下载限制十分钟，仍校验签名声明的大小与摘要。
+
 ## 版本与 Linux 构建号
 
 桌面 `version` 必须等于所复用官方壳源码的版本；构建时验证固定源码与元数据一致，不给 Linux 改动自增官方 alpha 编号。Linux 的重打包/适配变更只增加 `linuxRevision`。桌面更新按 `(官方版本, Linux 构建号)` 排序：同官方版本只接受更高构建号，不能用很大的构建号降级官方版本。三种产物名和发行标签同时包含这两个字段；deb 的 Version 为 `<version中的-替换为~>-<linuxRevision>`，rpm 的 Version 同样替换 `-` 为 `~`、Release 为 `<linuxRevision>`，不使用 CI run number；内核仍按其自己的版本更新。
@@ -48,9 +54,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/

@@ -184,6 +184,7 @@ export class UpdateManager {
   constructor({ root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract = extractKernel, fetch: transport = globalThis.fetch }) {
     Object.assign(this, { root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract, fetch: transport })
     this.candidates = {}
+    this.latest = {}
     this.busy = false
     this.state = { schemaVersion: 1, active: null, previous: null, pending: null }
     this.selected = bundled
@@ -243,10 +244,11 @@ export class UpdateManager {
     return {
       busy: this.busy, progress: this.progress ?? '', notice: this.notice, restartRequired: this.state.pending === 'staged',
       kernel: { version: this.selected.version, bundledVersion: this.bundled.version,
-        available: this.candidates.kernel?.release.version ?? null, configured: Boolean(this.config.kernel) },
+        available: this.candidates.kernel?.release.version ?? null, latest: this.latest.kernel?.version ?? null, configured: Boolean(this.config.kernel) },
       desktop: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
         available: this.candidates.desktop?.release.version ?? null,
         availableLinuxRevision: this.candidates.desktop?.release.linuxRevision ?? null,
+        latest: this.latest.desktop?.version ?? null, latestLinuxRevision: this.latest.desktop?.linuxRevision ?? null,
         configured: Boolean(this.config.desktop) },
     }
   }
@@ -259,11 +261,11 @@ export class UpdateManager {
     try { return await operation() } finally { this.busy = false; this.progress = '' }
   }
 
-  async response(url) {
+  async response(url, timeout = 120_000) {
     let address = new URL(httpsUrl(url))
     const releasePath = /^\/([^/]+\/[^/]+)\/releases\/(?:latest\/download|download\/[^/]+)\/([^/]+)$/
     const github = address.host === 'github.com' && address.pathname.match(releasePath)
-    const signal = AbortSignal.timeout(120_000)
+    const signal = AbortSignal.timeout(timeout)
     for (let redirects = 0; ; redirects++) {
       const manual = github && address.host === 'github.com'
       const response = await this.fetch(address.href, { redirect: manual ? 'manual' : 'error', signal })
@@ -286,6 +288,7 @@ export class UpdateManager {
   async check(channel) {
     return this.exclusive(async () => {
       delete this.candidates[channel]
+      this.latest = { ...this.latest, [channel]: undefined }
       const source = this.source(channel)
       const response = await this.response(source.url)
       const chunks = []
@@ -296,6 +299,7 @@ export class UpdateManager {
       }
       const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       const release = verifyFeed(envelope, source.publicKey, channel)
+      this.latest = { ...this.latest, [channel]: release }
       if (channel === 'kernel') checkCompatibility(release, this.desktop)
       else {
         checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
@@ -310,7 +314,8 @@ export class UpdateManager {
   }
 
   async download(asset, destination) {
-    const response = await this.response(asset.url)
+    // ponytail: ten-minute whole-transfer bound; use idle timeouts if slower links need support.
+    const response = await this.response(asset.url, 600_000)
     const output = await fs.open(destination, 'wx', 0o600)
     const checksum = createHash('sha256')
     let size = 0

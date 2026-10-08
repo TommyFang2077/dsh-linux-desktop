@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -222,4 +222,88 @@ test('packaged modes reject group/other writes without following symlinks', () =
   } finally {
     rmSync(temporary, { recursive: true, force: true })
   }
+})
+
+test('settings version IPC validates its sender and boolean request and isolates channel errors', async () => {
+  const source = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
+  const start = source.indexOf("  ipcMain.handle('dsh-workbench:versions'")
+  const end = source.indexOf("  ipcMain.handle('dsh-workbench:open-updates'", start)
+  assert.ok(start >= 0 && end > start)
+  let invoke
+  const checked = []
+  const context = {
+    performing: false,
+    ipcMain: { handle: (name, handler) => { assert.equal(name, 'dsh-workbench:versions'); invoke = handler } },
+    options: { trustedSender: event => event.trusted === true },
+    manager: { check: async channel => { checked.push(channel); if (channel === 'kernel') throw new Error('HTTP 404') },
+      status: () => ({ desktop: { latest: '1.2.0' }, kernel: { version: '1.1.0' } }) },
+  }
+  runInNewContext(source.slice(start, end), context)
+  await assert.rejects(invoke({ trusted: false }, true), /不可信/)
+  await assert.rejects(invoke({ trusted: true }, 'install'), /参数无效/)
+  assert.equal(checked.length, 0)
+  const result = await invoke({ trusted: true }, true)
+  assert.deepEqual(checked, ['kernel', 'desktop'])
+  assert.equal(result.errors.kernel, 'HTTP 404')
+  assert.equal(result.errors.desktop, undefined)
+  assert.equal(result.desktop.latest, '1.2.0')
+  await invoke({ trusted: true }, false)
+  assert.equal(checked.length, 2)
+  context.performing = true
+  await assert.rejects(invoke({ trusted: true }, true), /确认对话框/ )
+  await invoke({ trusted: true }, false)
+  assert.equal(checked.length, 2, 'Read-only queries cannot change a release awaiting installation approval')
+})
+
+test('afterPack removes the default ASAR before all artifact formats and rejects remaining ASAR files', async t => {
+  const appOutDir = mkdtempSync(join(tmpdir(), 'dsh-after-pack-'))
+  t.after(() => rmSync(appOutDir, { recursive: true, force: true }))
+  const workbench = join(appOutDir, 'resources/app/workbench')
+  mkdirSync(workbench, { recursive: true })
+  for (const file of ['desktop.json', 'updates.json']) writeFileSync(join(workbench, file), '{}')
+  const defaultAsar = join(appOutDir, 'resources/default_app.asar')
+  writeFileSync(defaultAsar, 'default app')
+  let verified = false
+  const afterPack = runInNewContext(`(${config.afterPack.toString()})`, {
+    config: { afterPack: async () => { verified = true } }, join, rmSync, readdirSync, readFileSync, hardenPermissions,
+  })
+  await afterPack({ appOutDir })
+  assert.equal(verified, true)
+  assert.equal(readdirSync(join(appOutDir, 'resources')).includes('default_app.asar'), false)
+  writeFileSync(join(workbench, 'unsupported.asar'), 'unsupported')
+  await assert.rejects(afterPack({ appOutDir }), /ASAR/)
+})
+
+test('updater quits only after installer cleanup has completed and does not quit on cancellation', async () => {
+  const source = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
+  const start = source.indexOf("  ipcMain.handle('dsh-workbench:updates'")
+  const end = source.indexOf('\n  return {\n    get selected()', start)
+  assert.ok(start >= 0 && end > start)
+  let invoke, cleaned = false, scheduled = 0, quits = 0, accepted = true
+  const contents = { mainFrame: { url: 'file:///updates.html' } }
+  const context = {
+    ipcMain: { handle: (_name, handler) => { invoke = handler } },
+    window: { webContents: contents }, url: contents.mainFrame.url, performing: false,
+    dialog: { showMessageBox: async () => ({ response: 1 }) },
+    userDesktop: { root: '/managed/home' }, extract: () => {},
+    manager: { busy: false, status: () => ({ desktop: { available: '1.2.0', availableLinuxRevision: 5 } }),
+      installDesktop: async (_prepare, install, restart) => {
+        if (!accepted) return false
+        await install({ restart })
+        assert.equal(quits, 0, 'Actual process exit must not interrupt installer cleanup')
+        cleaned = true
+        return true
+      } },
+    installUserDesktop: async artifact => { await artifact.restart('/managed/new'); return { executable: '/managed/new' } },
+    options: { prepareRestart: async () => true, restart: () => { scheduled++ },
+      finishRestart: () => { assert.equal(cleaned, true); quits++ }, recover: () => assert.fail('Unexpected recovery') },
+  }
+  runInNewContext(source.slice(start, end), context)
+  const event = { sender: contents, senderFrame: contents.mainFrame }
+  await invoke(event, 'install', 'desktop')
+  assert.equal(scheduled, 1)
+  assert.equal(quits, 1)
+  accepted = false
+  await invoke(event, 'install', 'desktop')
+  assert.equal(quits, 1)
 })

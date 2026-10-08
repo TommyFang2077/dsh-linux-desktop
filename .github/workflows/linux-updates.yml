@@ -55,6 +55,7 @@ jobs:
           make prepare
           make test
           make package
+          node --test tests/archive-worker.test.mjs
       - name: Sign independent kernel and desktop feeds
         if: env.HAS_SIGNING_KEY == 'true'
         env:

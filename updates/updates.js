@@ -1,11 +1,12 @@
 let working = false
+let channelErrors = {}
 function render(status) {
   for (const channel of ['kernel', 'desktop']) {
     const state = status[channel]
     const build = channel === 'desktop' ? ` · Linux 构建 r${state.linuxRevision}` : ''
-    const availableBuild = channel === 'desktop' ? ` · Linux 构建 r${state.availableLinuxRevision}` : ''
-    document.getElementById(`${channel}-version`).textContent = `当前版本：${state.version}${build}${state.available ? ` · 可用版本：${state.available}${availableBuild}` : ''}`
-    document.getElementById(`${channel}-source`).textContent = state.configured ? '已配置独立签名更新源' : '尚未配置此通道的发布源与签名公钥'
+    const latestBuild = channel === 'desktop' && state.latestLinuxRevision != null ? ` · Linux 构建 r${state.latestLinuxRevision}` : ''
+    document.getElementById(`${channel}-version`).textContent = `当前版本：${state.version}${build} · 最新发布：${state.latest ? `${state.latest}${latestBuild}` : '尚未获取'}${state.available ? ' · 可更新' : ''}`
+    document.getElementById(`${channel}-source`).textContent = state.configured ? `已配置独立签名更新源${channelErrors[channel] ? ` · 检查失败：${channelErrors[channel]}` : ''}` : '尚未配置此通道的发布源与签名公钥'
     for (const button of document.querySelectorAll(`[data-channel="${channel}"]`)) {
       button.disabled = working || status.busy || !state.configured || (button.dataset.action === 'install' && !state.available)
     }
@@ -21,6 +22,7 @@ async function invoke(action = 'status', channel) {
   try {
     const result = await window.workbenchUpdates.invoke(action, channel)
     working = false
+    if (action === 'check') channelErrors = { ...channelErrors, [channel]: result.error ?? '' }
     render(result.status)
     if (result.error) document.getElementById('error').textContent = result.error
     else if (action === 'check' && !result.status[channel].available) document.getElementById('status').textContent = '当前通道没有更新版本。'
@@ -30,7 +32,10 @@ async function invoke(action = 'status', channel) {
   }
 }
 for (const button of document.querySelectorAll('button')) button.addEventListener('click', () => invoke(button.dataset.action, button.dataset.channel))
-void invoke()
+void (async () => {
+  await invoke()
+  for (const channel of ['kernel', 'desktop']) await invoke('check', channel)
+})()
 setInterval(async () => {
   if (working) return
   try {

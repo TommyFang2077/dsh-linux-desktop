@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { chmodSync, lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createElectronBuilderConfig } from './build/upstream/apps/desktop/scripts/electron-builder-config.mjs'
 
@@ -40,6 +40,11 @@ export default {
   directories: { output },
   afterPack: async context => {
     await config.afterPack(context)
+    // The custom app replaces this default ASAR; old OTA workers require physical files.
+    rmSync(join(context.appOutDir, 'resources/default_app.asar'), { force: true })
+    if (readdirSync(context.appOutDir, { recursive: true }).some(path => path.endsWith('.asar'))) {
+      throw new Error('Desktop staging contains ASAR files incompatible with shipped OTA workers')
+    }
     const workbench = join(context.appOutDir, 'resources/app/workbench')
     for (const file of ['desktop.json', 'updates.json']) JSON.parse(readFileSync(join(workbench, file), 'utf8'))
     hardenPermissions(context.appOutDir)

@@ -56,6 +56,20 @@ export async function createWorkbenchUpdates(options) {
     await current.loadURL(url)
     current.show()
   }
+  ipcMain.handle('dsh-workbench:versions', async (event, check = false) => {
+    if (!options.trustedSender(event)) throw new Error('拒绝不可信的版本查询')
+    if (typeof check !== 'boolean') throw new Error('版本查询参数无效')
+    if (!check) return { ...manager.status(), errors: {} }
+    if (performing) throw new Error('已有更新操作或确认对话框正在进行')
+    performing = true
+    const errors = {}
+    try {
+      for (const channel of ['kernel', 'desktop']) {
+        try { await manager.check(channel) } catch (error) { errors[channel] = error.message }
+      }
+      return { ...manager.status(), errors }
+    } finally { performing = false }
+  })
   ipcMain.handle('dsh-workbench:open-updates', async event => {
     if (!options.trustedSender(event)) throw new Error('拒绝不可信的更新窗口请求')
     await open()
@@ -86,18 +100,20 @@ export async function createWorkbenchUpdates(options) {
       })
       if (answer.response !== 1) return { status: manager.status() }
       try {
-        if (channel === 'kernel') await manager.installKernel(options.prepareRestart, options.restart)
+        let installed
+        if (channel === 'kernel') installed = await manager.installKernel(options.prepareRestart, options.restart)
         else {
-          if (userDesktop) await manager.installDesktop(options.prepareRestart, artifact => installUserDesktop({
+          if (userDesktop) installed = await manager.installDesktop(options.prepareRestart, artifact => installUserDesktop({
             ...artifact, root: userDesktop.root,
             extract: (archive, destination) => extract(archive, destination, 'desktop'),
           }), options.restart)
           else {
             const format = await installedFormat(process.execPath)
-            await manager.installDesktop(options.prepareRestart,
+            installed = await manager.installDesktop(options.prepareRestart,
               artifact => installSystemDesktop(artifact, resources), options.restart, format)
           }
         }
+        if (installed) options.finishRestart()
       } catch (error) {
         await options.recover()
         throw error

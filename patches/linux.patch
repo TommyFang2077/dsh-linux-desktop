@@ -316,22 +316,29 @@ index 948a88e..eb86da7 100644
     * @param projectDir - Desktop plugin profile and child working directory.
     * @param inspectPort - Optional loopback inspector port for workspace development.
 diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
-index fc19021..ebfdfb0 100644
+index fc19021..32f9c84 100644
 --- a/apps/desktop/src/ipc.ts
 +++ b/apps/desktop/src/ipc.ts
-@@ -27,6 +27,7 @@ export const DESKTOP_IPC = {
+@@ -27,6 +27,8 @@ export const DESKTOP_IPC = {
    updatesStatus: 'dsh-desktop:updates-status',
    updatesOpen: 'dsh-desktop:updates-open',
    updatesPresentation: 'dsh-desktop:updates-presentation',
 +  openWorkbenchUpdates: 'dsh-workbench:open-updates',
++  workbenchVersions: 'dsh-workbench:versions',
    nativeThemeSet: 'dsh-desktop:native-theme-set',
    windowFullscreen: 'dsh-desktop:window-fullscreen',
    windowsAppearance: 'dsh-desktop:windows-appearance',
-@@ -84,6 +85,7 @@ export interface DshDesktopProductApi {
+@@ -84,6 +86,13 @@ export interface DshDesktopProductApi {
      open(): Promise<void>
      subscribe(listener: (state: DesktopUpdatePresentation) => void): () => void
    }
 +  openWorkbenchUpdates(): Promise<void>
++  /** Read selected versions and optionally check both signed feeds without authorizing installation. */
++  getWorkbenchVersions?(check: boolean): Promise<{
++    kernel: { version: string; latest: string | null }
++    desktop: { version: string; linuxRevision: number; latest: string | null; latestLinuxRevision: number | null }
++    errors: Partial<Record<'kernel' | 'desktop', string>>
++  }>
  }
  
  /** Scheme of Desktop-owned application documents. */
@@ -452,7 +459,7 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..76bd2a6 100644
+index b4b8153..42a045c 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -501,7 +508,7 @@ index b4b8153..76bd2a6 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -148,9 +151,46 @@ interface RuntimeResources {
+@@ -148,9 +151,47 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -529,6 +536,7 @@ index b4b8153..76bd2a6 100644
 +    probeKernel: (kernel: { dsh: string; runtime: string }) => Promise<void>
 +    prepareRestart: () => Promise<boolean>
 +    restart: (execPath?: string) => void
++    finishRestart: () => void
 +    recover: () => Promise<void>
 +    trustedSender: (event: IpcMainInvokeEvent) => boolean
 +  }): Promise<WorkbenchUpdates>
@@ -550,7 +558,7 @@ index b4b8153..76bd2a6 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -160,6 +200,62 @@ function runtimeResources(): RuntimeResources {
+@@ -160,6 +201,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
@@ -613,7 +621,7 @@ index b4b8153..76bd2a6 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -316,12 +412,32 @@ async function main(): Promise<void> {
+@@ -316,12 +413,33 @@ async function main(): Promise<void> {
    void pruneCrashReports(app.getPath('logs'))
    const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
    const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -633,7 +641,8 @@ index b4b8153..76bd2a6 100644
 +      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
 +      probeKernel: probeWorkbenchKernel,
 +      prepareRestart: () => prepareWorkbenchRestart(),
-+      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }); quitWithoutConfirmation() },
++      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
++      finishRestart: () => { quitWithoutConfirmation() },
 +      recover: () => recoverWorkbenchBackend(),
 +      trustedSender: (event) => {
 +        try { assertProductSender(event); return true }
@@ -651,7 +660,7 @@ index b4b8153..76bd2a6 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -442,7 +558,11 @@ async function main(): Promise<void> {
+@@ -442,7 +560,11 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -664,7 +673,7 @@ index b4b8153..76bd2a6 100644
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -508,8 +628,9 @@ async function main(): Promise<void> {
+@@ -508,8 +630,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -676,7 +685,7 @@ index b4b8153..76bd2a6 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -564,77 +685,120 @@ async function main(): Promise<void> {
+@@ -564,77 +687,120 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -854,7 +863,7 @@ index b4b8153..76bd2a6 100644
    )
  
    const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -925,7 +1089,7 @@ async function main(): Promise<void> {
+@@ -925,7 +1091,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -863,7 +872,7 @@ index b4b8153..76bd2a6 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -952,7 +1116,10 @@ async function main(): Promise<void> {
+@@ -952,7 +1118,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -875,7 +884,7 @@ index b4b8153..76bd2a6 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -974,19 +1141,22 @@ async function main(): Promise<void> {
+@@ -974,19 +1143,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -902,7 +911,7 @@ index b4b8153..76bd2a6 100644
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1225,7 +1395,9 @@ async function main(): Promise<void> {
+@@ -1225,7 +1397,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -913,7 +922,7 @@ index b4b8153..76bd2a6 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1240,6 +1412,7 @@ async function main(): Promise<void> {
+@@ -1240,6 +1414,7 @@ async function main(): Promise<void> {
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -921,7 +930,7 @@ index b4b8153..76bd2a6 100644
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1275,6 +1448,7 @@ async function main(): Promise<void> {
+@@ -1275,6 +1450,7 @@ async function main(): Promise<void> {
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }
@@ -967,14 +976,17 @@ index 680b439..0d9732f 100644
   * @param environment - Caller environment preserved for plugin execution.
   * @returns Environment for a Node-mode child process.
 diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
-index f590b8b..31d8c37 100644
+index f590b8b..3d61823 100644
 --- a/apps/desktop/src/preload-app.ts
 +++ b/apps/desktop/src/preload-app.ts
-@@ -55,6 +55,7 @@ function createProductApi(): DshDesktopProductApi {
+@@ -55,6 +55,10 @@ function createProductApi(): DshDesktopProductApi {
          return () => { ipcRenderer.off(DESKTOP_IPC.updatesPresentation, handle) }
        },
      },
 +    openWorkbenchUpdates: () => ipcRenderer.invoke(DESKTOP_IPC.openWorkbenchUpdates) as Promise<void>,
++    ...(process.platform === 'linux' ? {
++      getWorkbenchVersions: (check: boolean) => ipcRenderer.invoke(DESKTOP_IPC.workbenchVersions, check) as ReturnType<NonNullable<DshDesktopProductApi['getWorkbenchVersions']>>,
++    } : {}),
    }
  }
  
@@ -1201,44 +1213,113 @@ index 9848c7f..f0ac5c5 100644
    expect(await bootstrap(event)).toEqual({ languages: ['en-US'], preference: 'en' })
    const welcomeCount = state.beforeWelcome.mock.calls.length
    state.hasApiKey = true
+diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
+index 66f159a..a601e6f 100644
+--- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
++++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
+@@ -5,3 +5,7 @@
+   line-height: 22px;
+   overflow-wrap: anywhere;
+ }
++
++.row button + button {
++  margin-inline-start: 8px;
++}
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
-index e3c8cb7..d0cde09 100644
+index e3c8cb7..943cd14 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 +++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
-@@ -2,13 +2,25 @@
+@@ -1,14 +1,70 @@
+-/** Installed release version in General Settings for Web and Desktop. */
++/** Installed and signed published versions in General Settings for Web and Desktop. */
++import { useEffect, useState } from 'react'
  import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
  import css from './CurrentVersionRow.module.css'
  
++/** Read-only shell-owned versions; update authorization remains in the separate update window. */
++export interface WorkbenchVersions {
++  kernel: { version: string; latest: string | null }
++  desktop: { version: string; linuxRevision: number; latest: string | null; latestLinuxRevision: number | null }
++  errors: Partial<Record<'kernel' | 'desktop', string>>
++}
++
 +interface CurrentVersionRowInjected {
 +  openWorkbenchUpdates?: () => Promise<void>
++  getWorkbenchVersions?: (check: boolean) => Promise<WorkbenchVersions>
 +}
 +
  /**
-  * Render the version embedded by the client build; partial builds without metadata omit the row.
-  * @param props - runtime share and localized copy.
-  * @returns the current release label, or nothing when build metadata is absent.
+- * Render the version embedded by the client build; partial builds without metadata omit the row.
+- * @param props - runtime share and localized copy.
+- * @returns the current release label, or nothing when build metadata is absent.
++ * Render live kernel and desktop versions when supported, retaining the Web build label otherwise.
++ * @param props - runtime share, localized copy, and read-only shell queries.
++ * @returns current and signed latest versions, with independent channel failures.
   */
 -export function CurrentVersionRow({ t }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'>) {
-+export function CurrentVersionRow({ t, openWorkbenchUpdates }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'> & CurrentVersionRowInjected) {
++export function CurrentVersionRow({ t, openWorkbenchUpdates, getWorkbenchVersions }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'> & CurrentVersionRowInjected) {
    const version = process.env.DSH_CLIENT_VERSION
 -  if (version === undefined) return null
 -  return <div className={css.row}>{t('general.currentVersion', { version })}</div>
-+  if (version === undefined && openWorkbenchUpdates === undefined) return null
++  const [versions, setVersions] = useState<WorkbenchVersions>()
++  const [busy, setBusy] = useState(Boolean(getWorkbenchVersions))
++  const [failure, setFailure] = useState('')
++  useEffect(() => {
++    if (getWorkbenchVersions === undefined) return
++    let current = true
++    void (async () => {
++      try {
++        const installed = await getWorkbenchVersions(false)
++        if (current) setVersions(installed)
++        const checked = await getWorkbenchVersions(true)
++        if (current) setVersions(checked)
++      } catch (error) {
++        if (current) setFailure(error instanceof Error ? error.message : String(error))
++      } finally { if (current) setBusy(false) }
++    })()
++    return () => { current = false }
++  }, [getWorkbenchVersions])
++  if (version === undefined && openWorkbenchUpdates === undefined && getWorkbenchVersions === undefined) return null
++  const refresh = async () => {
++    if (getWorkbenchVersions === undefined) return
++    setBusy(true)
++    setFailure('')
++    try { setVersions(await getWorkbenchVersions(true)) }
++    catch (error) { setFailure(error instanceof Error ? error.message : String(error)) }
++    finally { setBusy(false) }
++  }
++  const revision = (value: string, build: number | null) => build === null ? value : `${value} · Linux r${build}`
 +  return <div className={css.row}>
-+    {version !== undefined && t('general.currentVersion', { version })}
-+    {openWorkbenchUpdates !== undefined && <button type="button" onClick={() => { void openWorkbenchUpdates().catch((error: unknown) => {
-+      // The Electron shell owns update-window failures; keep its IPC rejection out of the page.
-+      void error
-+    }) }}>
-+      {t('general.workbenchUpdates')}
++    {versions !== undefined ? <>
++      <div>{t('general.kernelVersion', { version: versions.kernel.version })}</div>
++      <div>{t('general.latestVersion', { version: versions.kernel.latest ?? t('general.versionUnknown') })}</div>
++      {versions.errors.kernel !== undefined && <div role="alert">{t('general.versionCheckFailed')}: {versions.errors.kernel}</div>}
++      <div>{t('general.desktopVersion', { version: revision(versions.desktop.version, versions.desktop.linuxRevision) })}</div>
++      <div>{t('general.latestVersion', { version: versions.desktop.latest === null ? t('general.versionUnknown') : revision(versions.desktop.latest, versions.desktop.latestLinuxRevision) })}</div>
++      {versions.errors.desktop !== undefined && <div role="alert">{t('general.versionCheckFailed')}: {versions.errors.desktop}</div>}
++    </> : version !== undefined && t('general.currentVersion', { version })}
++    {failure !== '' && <div role="alert">{t('general.versionCheckFailed')}: {failure}</div>}
++    {getWorkbenchVersions !== undefined && <button type="button" disabled={busy} onClick={() => { void refresh() }}>
++      {busy ? t('general.checkingVersions') : t('general.checkVersions')}
 +    </button>}
++    {openWorkbenchUpdates !== undefined && <button type="button" onClick={() => {
++      void openWorkbenchUpdates().catch((error: unknown) => { setFailure(error instanceof Error ? error.message : String(error)) })
++    }}>{t('general.workbenchUpdates')}</button>}
 +  </div>
  }
 diff --git a/packages/client/ui-settings-general/src/client/index.ts b/packages/client/ui-settings-general/src/client/index.ts
-index a17ea2c..c84bc67 100644
+index a17ea2c..c285399 100644
 --- a/packages/client/ui-settings-general/src/client/index.ts
 +++ b/packages/client/ui-settings-general/src/client/index.ts
-@@ -81,13 +81,21 @@ export function apply(ctx: ClientContext): void {
+@@ -33,6 +33,7 @@ import { DesktopUpdateSource } from './desktop-update-source.ts'
+ import { CloseLabel, HeaderContent, TriggerContent } from './chrome.tsx'
+ import { GeneralSection } from './GeneralSection.tsx'
+ import { CurrentVersionRow } from './CurrentVersionRow.tsx'
++import type { WorkbenchVersions } from './CurrentVersionRow.tsx'
+ import { DeveloperToolsRow, type DeveloperToolsRowInjected } from './DeveloperToolsRow.tsx'
+ import { SettingsDocumentAction } from './SettingsDocumentAction.tsx'
+ import type { SettingsDocumentActionInjected } from './SettingsDocumentAction.tsx'
+@@ -81,13 +82,23 @@ export function apply(ctx: ClientContext): void {
      }),
    }, DeveloperToolsRow))
    // Version information follows the core preferences.
@@ -1246,47 +1327,63 @@ index a17ea2c..c84bc67 100644
 +    protocolVersion: number
 +    updates?: DesktopUpdateBridge
 +    openWorkbenchUpdates?: () => Promise<void>
++    getWorkbenchVersions?: (check: boolean) => Promise<WorkbenchVersions>
 +  } }).dshDesktop
 +  const desktopApi = carrier?.protocolVersion === 1 ? carrier : undefined
    ctx.slots.inject('settings.general.item', () => ctx.slots.register({
      name: 'settings.general.item', id: 'current-version', order: 100, locale: NS,
-+    inject: () => desktopApi?.openWorkbenchUpdates === undefined
-+      ? {}
-+      : { openWorkbenchUpdates: desktopApi.openWorkbenchUpdates },
++    inject: () => ({
++      ...(desktopApi?.openWorkbenchUpdates === undefined ? {} : { openWorkbenchUpdates: desktopApi.openWorkbenchUpdates }),
++      ...(desktopApi?.getWorkbenchVersions === undefined ? {} : { getWorkbenchVersions: desktopApi.getWorkbenchVersions }),
++    }),
    }, CurrentVersionRow))
    ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-settings-general: dictionaries')
    const connection = ctx.get('connection') as ConnectionHandle
 -  const carrier = (globalThis as typeof globalThis & { dshDesktop?: { protocolVersion: number; updates?: DesktopUpdateBridge } }).dshDesktop
 -  const desktopUpdate = new DesktopUpdateSource(carrier?.protocolVersion === 1 ? carrier.updates : undefined)
-+  const desktopUpdate = new DesktopUpdateSource(desktopApi?.updates)
++  const desktopUpdate = new DesktopUpdateSource(desktopApi?.getWorkbenchVersions === undefined ? desktopApi?.updates : undefined)
    ctx.effect(() => () => { desktopUpdate.dispose() }, 'ui-settings-general: desktop update carrier')
    ctx.slots.inject('sidebar.toggle.badge', () => ctx.slots.register({
      name: 'sidebar.toggle.badge', locale: NS,
 diff --git a/packages/client/ui-settings-general/src/client/locales.ts b/packages/client/ui-settings-general/src/client/locales.ts
-index 8d0f253..83ac05f 100644
+index 8d0f253..ceb078b 100644
 --- a/packages/client/ui-settings-general/src/client/locales.ts
 +++ b/packages/client/ui-settings-general/src/client/locales.ts
-@@ -28,6 +28,7 @@ export const zh = {
+@@ -28,6 +28,14 @@ export const zh = {
    'openDocument.error': '无法打开配置文件',
    'general.nav': '通用设置',
    'general.currentVersion': '当前版本：{version}',
 +  'general.workbenchUpdates': '软件更新',
++  'general.kernelVersion': '内核版本：{version}',
++  'general.desktopVersion': '桌面版本：{version}',
++  'general.latestVersion': '最新发布：{version}',
++  'general.versionUnknown': '尚未获取',
++  'general.checkVersions': '检查最新版本',
++  'general.checkingVersions': '正在检查版本…',
++  'general.versionCheckFailed': '版本检查失败',
    'developerTools.title': '显示代码工作视图',
    'developerTools.error': '保存失败，请重试',
    'developerTools.description': '开启后，显示轨迹、本轮代码差异，可选择完整的 Agent 预设切换',
-@@ -69,6 +70,7 @@ export const en = {
+@@ -69,6 +77,14 @@ export const en = {
    'openDocument.error': 'Could not open configuration file',
    'general.nav': 'General',
    'general.currentVersion': 'Current version: {version}',
 +  'general.workbenchUpdates': 'Software updates',
++  'general.kernelVersion': 'Kernel version: {version}',
++  'general.desktopVersion': 'Desktop version: {version}',
++  'general.latestVersion': 'Latest release: {version}',
++  'general.versionUnknown': 'Not checked',
++  'general.checkVersions': 'Check latest versions',
++  'general.checkingVersions': 'Checking versions…',
++  'general.versionCheckFailed': 'Could not check versions',
    'developerTools.title': 'Show coding view',
    'developerTools.error': 'Could not save. Please try again.',
    'developerTools.description': 'Shows trajectory, code diffs, and all Agent presets',
 diff --git a/packages/client/ui-settings-general/tests/components.client.spec.tsx b/packages/client/ui-settings-general/tests/components.client.spec.tsx
-index ac2e7f0..5a7342d 100644
+index ac2e7f0..915b07e 100644
 --- a/packages/client/ui-settings-general/tests/components.client.spec.tsx
 +++ b/packages/client/ui-settings-general/tests/components.client.spec.tsx
-@@ -240,6 +240,16 @@ describe('current version', () => {
+@@ -240,6 +240,40 @@ describe('current version', () => {
      expect(screen.queryByRole('button')).toBeNull()
    })
  
@@ -1298,6 +1395,30 @@ index ac2e7f0..5a7342d 100644
 +    web.rerender(<CurrentVersionRow {...kit} t={t} openWorkbenchUpdates={openWorkbenchUpdates} />)
 +    fireEvent.click(screen.getByRole('button', { name: en['general.workbenchUpdates'] }))
 +    expect(openWorkbenchUpdates).toHaveBeenCalledOnce()
++  })
++
++  it('shows selected kernel, desktop revision and signed latest versions independently', async () => {
++    const translate = ((key: keyof typeof en, params?: { version?: string }) => en[key].replace('{version}', params?.version ?? '')) as TriggerContentProps['t']
++    const result = { kernel: { version: '0.2.1-alpha.2', latest: '0.2.1-alpha.2' },
++      desktop: { version: '0.2.1-alpha.1', linuxRevision: 4, latest: '0.2.1-alpha.1', latestLinuxRevision: 5 }, errors: {} }
++    const getWorkbenchVersions = vi.fn(async () => result)
++    render(<CurrentVersionRow {...kit} t={translate} getWorkbenchVersions={getWorkbenchVersions} />)
++    await waitFor(() => expect(screen.getByText('Kernel version: 0.2.1-alpha.2')).toBeTruthy())
++    expect(screen.getByText('Desktop version: 0.2.1-alpha.1 · Linux r4')).toBeTruthy()
++    expect(screen.getByText('Latest release: 0.2.1-alpha.1 · Linux r5')).toBeTruthy()
++    expect(getWorkbenchVersions.mock.calls).toEqual([[false], [true]])
++    fireEvent.click(screen.getByRole('button', { name: en['general.checkVersions'] }))
++    await waitFor(() => expect(getWorkbenchVersions).toHaveBeenCalledTimes(3))
++  })
++
++  it('keeps desktop latest visible when the kernel feed fails and reports the failure', async () => {
++    const result = { kernel: { version: '0.2.1-alpha.1', latest: null },
++      desktop: { version: '0.2.1-alpha.1', linuxRevision: 4, latest: '0.2.1-alpha.1', latestLinuxRevision: 5 },
++      errors: { kernel: 'HTTP 404' } }
++    const translate = ((key: keyof typeof en, params?: { version?: string }) => en[key].replace('{version}', params?.version ?? '')) as TriggerContentProps['t']
++    render(<CurrentVersionRow {...kit} t={translate} getWorkbenchVersions={async () => result} />)
++    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('HTTP 404'))
++    expect(screen.getByText(/Linux r5/)).toBeTruthy()
 +  })
 +
    it('omits the row when a partial build has no version metadata', () => {

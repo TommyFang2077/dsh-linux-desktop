@@ -17,7 +17,12 @@ test('desktop activation restarts the explicit new executable while kernel resta
   assert.equal(options.execPath, '/home/user/Applications/dsh-linux-desktop/versions/new/dsh-workbench')
   restart()
   assert.equal(options, undefined)
-  assert.equal(quits, 2)
+  assert.equal(quits, 0, 'Scheduling relaunch must not exit before archive/lock cleanup')
+  const finishLine = main.split('\n').find(line => line.includes('finishRestart: () => {'))
+  assert.ok(finishLine)
+  const finish = runInNewContext(`({${finishLine.trim()}}).finishRestart`, { quitWithoutConfirmation: () => { quits++ } })
+  finish()
+  assert.equal(quits, 1)
 })
 
 test('packaged Linux Hosts advertise the actual selected kernel, not an assumed /opt tree', () => {
@@ -34,5 +39,5 @@ test('packaged Linux Hosts advertise the actual selected kernel, not an assumed 
   assert.equal(environment.DSH_BASE, '/home/user/.config/dsh-workbench/updates/kernels/kernel/dsh/node_modules/@deepseek-ai')
   assert.equal(environment.DSH_DESKTOP_INSTALL, '/home/user/Applications/dsh-linux-desktop/versions/desktop')
   const adapter = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
-  assert.match(adapter, /if \(userDesktop\) await manager.installDesktop/)
+  assert.match(adapter, /if \(userDesktop\) installed = await manager.installDesktop/)
 })

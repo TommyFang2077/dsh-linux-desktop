@@ -42,7 +42,7 @@ make gui-smoke                   # 隔离 HOME 的真实窗口、图片和沙箱
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"
@@ -65,9 +65,9 @@ tar -xzf "$archive" -C "$temporary"
 GitHub Actions 在推送 `main` 或手动触发时构建 deb、rpm 和用户归档，成功 run 的 `linux-updates-<commit>` artifact 包含三种产物、摘要和构建信息。下载后先核对来源与提交，并执行 `sha256sum --check SHA256SUMS`。系统安装示例（选择本发行版格式）：
 
 ```sh
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r4-linux-x64.deb
+sudo apt install ./dsh-workbench-0.2.1-alpha.1-r5-linux-x64.deb
 # 或 Fedora / RHEL 系：
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r4-linux-x64.rpm
+sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r5-linux-x64.rpm
 ```
 
 deb 版本为 `0.2.1~alpha.1-4`，rpm 为 `0.2.1~alpha.1`、Release `4`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
