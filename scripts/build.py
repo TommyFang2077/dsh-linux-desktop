@@ -160,7 +160,7 @@ exec \"$root/current/dsh-workbench\" \"$@\"
         control.mkdir()
         depends = "libgtk-3-0 | libgtk-3-0t64, libnss3, libxss1, libxtst6, libgbm1, libasound2 | libasound2t64, libatspi2.0-0 | libatspi2.0-0t64, xdg-utils"
         (control / "control").write_text(f"Package: dsh-workbench\nVersion: {version.replace('-', '~')}-{revision}\nArchitecture: amd64\nMaintainer: dsh-workbench contributors\nDepends: {depends}\nDescription: HOME-installed DeepSeek Harness desktop bootstrap\n")
-        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", tree, deb], check=True)
+        subprocess.run(["dpkg-deb", "-Zgzip", "-z1", "--build", "--root-owner-group", tree, deb], check=True)
         shutil.copyfile(deb, directory / deb.name)
         specroot = stage / "rpmbuild"
         for part in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"):
@@ -190,7 +190,9 @@ cp -a {tree}/usr/share/icons %{{buildroot}}/usr/share/
 /usr/share/applications/dsh-workbench.desktop
 /usr/share/icons/hicolor/512x512/apps/dsh-workbench.png
 """)
-        subprocess.run(["rpmbuild", "-bb", "--define", f"_topdir {specroot}", spec], check=True)
+        subprocess.run(["rpmbuild", "-bb", "--define", f"_topdir {specroot}",
+                        "--define", "_rpmformat 4", "--define", "_smp_build_ncpus 2",
+                        "--define", "_binary_payload w1.gzdio", spec], check=True)
         rpm = next((specroot / "RPMS/x86_64").glob("*.rpm"))
         target = directory / f"dsh-workbench-{version}-r{revision}-linux-x64.rpm"
         shutil.copyfile(rpm, target)

@@ -15,10 +15,10 @@
 
 ```sh
 # Ubuntu / Debian
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r6-linux-x64.deb
+sudo apt install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.deb
 
 # Fedora / RHEL
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r6-linux-x64.rpm
+sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.rpm
 ```
 
 安装后，从应用菜单打开 **dsh-workbench**。首次启动会自动将程序安装到 HOME，请稍等；不需要手动解压，也不需要另外安装 Node.js 或 Python。
@@ -56,7 +56,7 @@ sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r6-linux-x64.rpm
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r6-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r7-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"

@@ -136,7 +136,10 @@ class BuildTests(unittest.TestCase):
             bundle.assert_called_once()
 
     def test_native_packages_are_home_bootstraps_and_refuse_root_launch(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(build, "APP", Path(directory)):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "APP", Path(directory)), patch.object(build, "ROOT", Path(directory)):
+            (build.ROOT / "build").mkdir()
+            (build.ROOT / "build/icon.png").write_bytes(b"icon")
+            (build.ROOT / "build/install-user.mjs").write_bytes(b"installer")
             node = build.APP / ".desktop-build/targets/linux-x64/runtime/primary-runtime/dependencies/node/bin/node"
             node.parent.mkdir(parents=True)
             node.write_bytes(b"node")
@@ -156,6 +159,31 @@ class BuildTests(unittest.TestCase):
                     self.assertIn('export HOME="$home"', launcher)
                     self.assertNotIn("/opt/dsh-workbench", launcher)
                     self.assertTrue((tree / "usr/share/dsh-workbench/desktop.tar.gz").is_file())
+                    fake_home = Path(directory) / "home"
+                    fake_home.mkdir()
+                    fake_node = tree / "usr/share/dsh-workbench/node"
+                    fake_node.write_text('#!/bin/sh\nset -eu\nprintf "install\\n" >> "$HOME/installs"\n'
+                                         'mkdir -p "$HOME/Applications/dsh-linux-desktop/current"\n'
+                                         'printf \'#!/bin/sh\\nprintf "home-app\\\\n"\\n\' > "$HOME/Applications/dsh-linux-desktop/current/dsh-workbench"\n'
+                                         'chmod 755 "$HOME/Applications/dsh-linux-desktop/current/dsh-workbench"\n')
+                    fake_node.chmod(0o755)
+                    test_launcher = Path(directory) / "launch"
+                    simulated = launcher.replace('/usr/bin/id -u', '/usr/bin/printf 1000').replace(
+                        '/usr/bin/getent passwd "$uid"', f"/usr/bin/printf 'test:x:1000:1000::%s:/bin/sh\\n' '{fake_home}'"
+                    ).replace('payload=/usr/share/dsh-workbench', f"payload='{tree}/usr/share/dsh-workbench'")
+                    test_launcher.write_text(simulated)
+                    for _ in range(2):
+                        process = subprocess.Popen(["/bin/sh", test_launcher], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        stdout, stderr = process.communicate(timeout=10)
+                        self.assertEqual(process.returncode, 0, stderr)
+                        self.assertEqual(stdout, b"home-app\n")
+                    self.assertEqual((fake_home / "installs").read_text(), "install\n")
+                    test_launcher.write_text(simulated.replace('/usr/bin/printf 1000', '/usr/bin/printf 0'))
+                    process = subprocess.Popen(["/bin/sh", test_launcher], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    _, stderr = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 1)
+                    self.assertIn(b"not root", stderr)
+                    self.assertEqual((fake_home / "installs").read_text(), "install\n")
                     Path(args[-1]).write_bytes(b"deb")
                 else:
                     top = Path(args[args.index("--define") + 1].split(" ", 1)[1])
@@ -188,8 +216,8 @@ class BuildTests(unittest.TestCase):
 
     def test_package_verifier_pins_bootstrap_identity_and_linux_revision(self):
         for format, result in [
-            ("deb", ["dsh-workbench", "0.2.1~alpha.1-6", "amd64"]),
-            ("rpm", ["dsh-workbench", "0.2.1~alpha.1", "6", "x86_64"]),
+            ("deb", ["dsh-workbench", f"{build.DESKTOP['version'].replace('-', '~')}-{build.DESKTOP['linuxRevision']}", "amd64"]),
+            ("rpm", ["dsh-workbench", build.DESKTOP['version'].replace('-', '~'), str(build.DESKTOP['linuxRevision']), "x86_64"]),
         ]:
             with self.subTest(format=format), tempfile.TemporaryDirectory() as directory:
                 package = Path(directory) / f"bootstrap.{format}"
@@ -213,8 +241,10 @@ class BuildTests(unittest.TestCase):
             package.write_bytes(b"package")
             for format in ("deb", "rpm"):
                 for listing, rejected in (("/usr/bin/dsh-workbench\n", False), ("./opt/dsh-workbench/app\n", True)):
-                    identity = (["dsh-workbench", "0.2.1~alpha.1-6", "amd64"] if format == "deb"
-                                else "dsh-workbench\n0.2.1~alpha.1\n6\nx86_64")
+                    version = build.DESKTOP['version'].replace('-', '~')
+                    revision = build.DESKTOP['linuxRevision']
+                    identity = (["dsh-workbench", f"{version}-{revision}", "amd64"] if format == "deb"
+                                else f"dsh-workbench\n{version}\n{revision}\nx86_64")
                     outputs = ([*identity, listing] if format == "deb" else [identity, listing])
                     with self.subTest(format=format, listing=listing), patch.object(
                         build.subprocess, "check_output", side_effect=outputs
