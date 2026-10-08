@@ -16,7 +16,7 @@ make test
 make package
 ```
 
-官方内核源码由 `upstream.json` 固定；桌面版本和兼容范围独立保存在 `desktop.json`。桌面壳版本严格跟随所复用的官方壳源码，当前为 `0.2.1-alpha.1`，捆绑内核也为 `0.2.1-alpha.1` 开发预览版。Linux 适配单独使用 `linuxRevision`（当前 r3），不自行递增官方 alpha 编号；运行中的用户更新内核仍可独立升级。首次构建需要联网和数 GB 空间；生成的上游源码、依赖和中间产物在忽略的 `build/`，产物在 `dist/`：
+官方内核源码由 `upstream.json` 固定；桌面版本和兼容范围独立保存在 `desktop.json`。桌面壳版本严格跟随所复用的官方壳源码，当前为 `0.2.1-alpha.1`，捆绑内核也为 `0.2.1-alpha.1` 开发预览版。Linux 适配单独使用 `linuxRevision`（当前 r4），不自行递增官方 alpha 编号；运行中的用户更新内核仍可独立升级。首次构建需要联网和数 GB 空间；生成的上游源码、依赖和中间产物在忽略的 `build/`，产物在 `dist/`：
 
 - `dsh-workbench-<官方壳版本>-r<Linux构建号>-linux-x64.tar.gz`，唯一归档根为 `app/`
 - `dsh-workbench-<官方壳版本>-r<Linux构建号>-linux-x64.deb` / `.rpm`
@@ -42,7 +42,7 @@ make gui-smoke                   # 隔离 HOME 的真实窗口、图片和沙箱
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r3-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"
@@ -65,18 +65,18 @@ tar -xzf "$archive" -C "$temporary"
 GitHub Actions 在推送 `main` 或手动触发时构建 deb、rpm 和用户归档，成功 run 的 `linux-updates-<commit>` artifact 包含三种产物、摘要和构建信息。下载后先核对来源与提交，并执行 `sha256sum --check SHA256SUMS`。系统安装示例（选择本发行版格式）：
 
 ```sh
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r3-linux-x64.deb
+sudo apt install ./dsh-workbench-0.2.1-alpha.1-r4-linux-x64.deb
 # 或 Fedora / RHEL 系：
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r3-linux-x64.rpm
+sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r4-linux-x64.rpm
 ```
 
-deb 版本为 `0.2.1~alpha.1-3`，rpm 为 `0.2.1~alpha.1`、Release `3`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
+deb 版本为 `0.2.1~alpha.1-4`，rpm 为 `0.2.1~alpha.1`、Release `4`，确保同一官方版本的 Linux 重建也能被包管理器识别为升级。初次安装后启动 `/opt/dsh-workbench/dsh-workbench`；若存在 HOME 用户入口，系统安装不会删除它，请明确选择要运行的版本。不要覆盖安装后继续使用持有旧可执行文件的进程，先完全退出再启动。
 
 系统版在「设置 → 通用 → 软件更新」下载同一签名清单中的对应 deb/rpm，验证摘要、身份、架构和 Linux 构建号，再通过 pkexec 调用 root 所有且不可被普通用户修改的安装器及包管理器。旧客户端若不支持当前清单格式，需要先手动安装本次包。没有签名 Secret/公开发行时，CI artifact 可手动安装，但不能宣称在线升级已上线。
 
 ## Fedora / GNOME：RPM 已安装但没有托盘
 
-Linux r3 将打包运行时固定为 **Electron 44.5.1**，不再使用上游锁文件中的 44.0.0；官方桌面壳版本仍是 `0.2.1-alpha.1`，内核更新及用户数据不变。本地同一旧 GNOME watcher 的最小测试中，44.0.0 未进入托盘列表，44.5.1 以兼容的服务名注册成功。优先使用重建的 r3 包，无需为了应用自动改动系统扩展；Fedora 真机图标和菜单仍须单独验证。
+Linux 自 r3 起将打包运行时固定为 **Electron 44.5.1**，不再使用上游锁文件中的 44.0.0；官方桌面壳版本仍是 `0.2.1-alpha.1`，内核更新及用户数据不变。本地同一旧 GNOME watcher 的最小测试中，44.0.0 未进入托盘列表，44.5.1 以兼容的服务名注册成功。优先使用 r3 及以后重建的包，无需为了应用自动改动系统扩展；Fedora 真机图标和菜单仍须单独验证。
 
 如果日志出现下面的错误，问题是 watcher 不认识 Electron 44.0.0 的「服务名＋对象路径」注册格式，**不是 PNG 丢失，也不是切换 Wayland / X11 能解决的问题**：
 
@@ -105,13 +105,13 @@ DSH_WORKBENCH_TEST_APP=/opt/dsh-workbench/dsh-workbench \
   node scripts/gui-smoke.mjs --tray
 ```
 
-该检查使用临时 HOME，不改既有配置或会话，要求当前进程的服务名或其精确对象路径出现在 watcher 的 `RegisteredStatusNotifierItems` 中；未注册会明确失败。注册检查通过后，仍需人工确认图标可见、「打开」能恢复窗口、「退出」能结束应用，才算目标机器托盘修复完成。
+该检查使用临时 HOME，不改既有配置或会话，要求当前进程的服务名或其精确对象路径出现在 watcher 的 `RegisteredStatusNotifierItems` 中；未注册会明确失败。注册检查通过后，仍需人工确认图标可见、「打开」能恢复窗口、「重启」能重新启动应用、「退出」能结束应用，才算目标机器托盘修复完成。
 
 ## 插件、桌面功能与更新
 
 - Linux 后端使用所选内核自带的独立 Node（当前 24.21.0），不在 Electron Node 模式加载 sharp；候选内核探测和回滚也使用各自的 Node。
 - Chromium 沙箱、上下文隔离和 Web 安全保持开启，不使用 `--no-sandbox`。系统不允许非特权 user namespace 时明确报错，不暗中修改安全策略。
-- 移除顶部「应用 / Edit」菜单栏；系统托盘保留打开/退出操作。GNOME 需要兼容 Electron 注册格式的 AppIndicator/KStatusNotifierItem 扩展，程序不自动修改扩展。
+- 移除顶部「应用 / Edit」菜单栏；系统托盘提供打开/重启/退出操作；「重启」与「退出」走同一任务确认，确认后才重新启动，取消则不重启。GNOME 需要兼容 Electron 注册格式的 AppIndicator/KStatusNotifierItem 扩展，程序不自动修改扩展。
 - 首次启动通过官方插件管理器默认安装兼容的 `dshmarket 1.66.8`，保留用户已有版本、已卸载状态和配置；不会强装不兼容的 TUI。
 - 普通插件安装在用户 profile。Host 暴露所选内核的真实路径，但用户拥有文件**不代表** `dsh-purge` 的磁盘补丁已兼容完整性检查；本次不会自动清洗、关掉审批或文件沙箱、伪装官方客户端或修改外部插件配置。
 - 「设置 → 通用 → 软件更新」仍分内核和桌面：内核签名、兼容性、试启动和崩溃回滚逻辑不变；默认 HOME 版安装用户归档、原子切换并明确重启到新 executable，不需要系统授权。兼容系统版才使用签名 deb/rpm 和系统授权；两者都不把兼容的新内核降级。

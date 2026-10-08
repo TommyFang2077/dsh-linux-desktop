@@ -452,7 +452,7 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..0fb5ee1 100644
+index b4b8153..76bd2a6 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -483,7 +483,16 @@ index b4b8153..0fb5ee1 100644
  import { DesktopBrowserGuests } from './browser-guests.ts'
  import { installDesktopShortcuts } from './keyboard.ts'
  import { DesktopUpdateOverlays } from './update-overlay.ts'
-@@ -95,7 +96,7 @@ const recovery = new DesktopFatalRecovery({
+@@ -68,6 +69,8 @@ let shuttingDown = false
+  * development restart command. The installer handoff has its own before-quit branch.
+  */
+ let skipQuitConfirmation = false
++/** Set by the tray restart entry; the relaunch is scheduled only once the quit is confirmed. */
++let relaunchAfterQuit = false
+ let windowsLanguage: string | undefined
+ /**
+  * Whether the backend has reached ready: false until the first ready, back to
+@@ -95,7 +98,7 @@ const recovery = new DesktopFatalRecovery({
    show: options => dialog.showMessageBox(options),
    stop: () => { shuttingDown = true; return stopForRecovery() },
    disablePlugins: async () => {
@@ -492,7 +501,7 @@ index b4b8153..0fb5ee1 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -148,9 +149,46 @@ interface RuntimeResources {
+@@ -148,9 +151,46 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -541,7 +550,7 @@ index b4b8153..0fb5ee1 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -160,6 +198,62 @@ function runtimeResources(): RuntimeResources {
+@@ -160,6 +200,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
@@ -604,7 +613,7 @@ index b4b8153..0fb5ee1 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -316,12 +410,32 @@ async function main(): Promise<void> {
+@@ -316,12 +412,32 @@ async function main(): Promise<void> {
    void pruneCrashReports(app.getPath('logs'))
    const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
    const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -642,7 +651,7 @@ index b4b8153..0fb5ee1 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -442,7 +556,11 @@ async function main(): Promise<void> {
+@@ -442,7 +558,11 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -655,7 +664,7 @@ index b4b8153..0fb5ee1 100644
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -508,8 +626,9 @@ async function main(): Promise<void> {
+@@ -508,8 +628,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -667,7 +676,7 @@ index b4b8153..0fb5ee1 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -564,77 +679,120 @@ async function main(): Promise<void> {
+@@ -564,77 +685,120 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -845,7 +854,7 @@ index b4b8153..0fb5ee1 100644
    )
  
    const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -925,7 +1083,7 @@ async function main(): Promise<void> {
+@@ -925,7 +1089,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -854,7 +863,7 @@ index b4b8153..0fb5ee1 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -952,7 +1110,10 @@ async function main(): Promise<void> {
+@@ -952,7 +1116,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -866,7 +875,7 @@ index b4b8153..0fb5ee1 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -974,15 +1135,16 @@ async function main(): Promise<void> {
+@@ -974,19 +1141,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -886,7 +895,14 @@ index b4b8153..0fb5ee1 100644
      // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
      try {
        tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
-@@ -1225,7 +1387,9 @@ async function main(): Promise<void> {
+-        open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
++        open: () => { focusPrimaryWindow() },
++        restart: () => { if (quitting) return; relaunchAfterQuit = true; app.quit() },
++        quit: () => { relaunchAfterQuit = false; app.quit() } })
+     } catch (error) { console.warn('desktop tray: unavailable', error) }
+   }
+   const backgroundNotice = process.platform === 'win32'
+@@ -1225,7 +1395,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -897,6 +913,22 @@ index b4b8153..0fb5ee1 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+@@ -1240,6 +1412,7 @@ async function main(): Promise<void> {
+   if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
+   const finishQuit = (): void => {
+     quitting = true
++    if (relaunchAfterQuit) app.relaunch()
+     shuttingDown = true
+     updateJournal?.action('quit-requested')
+     quitConfirmation.dispose()
+@@ -1275,6 +1448,7 @@ async function main(): Promise<void> {
+     void quitConfirmation.confirm().then((approved) => {
+       if (quitting || shellInstallerOwnsQuit) return
+       if (approved) { finishQuit(); return }
++      relaunchAfterQuit = false
+       // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
+       if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
+     }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
 diff --git a/apps/desktop/src/node-environment.ts b/apps/desktop/src/node-environment.ts
 index 680b439..0d9732f 100644
 --- a/apps/desktop/src/node-environment.ts
@@ -947,12 +979,12 @@ index f590b8b..31d8c37 100644
  }
  
 diff --git a/apps/desktop/src/tray.ts b/apps/desktop/src/tray.ts
-index b2ce416..b462f28 100644
+index b2ce416..d06e5b9 100644
 --- a/apps/desktop/src/tray.ts
 +++ b/apps/desktop/src/tray.ts
-@@ -1,11 +1,11 @@
+@@ -1,15 +1,17 @@
 -/** Windows system tray: the always-present way back to a hidden window and the explicit quit entry. */
-+/** Windows/Linux system tray: the way back to a hidden window and the explicit quit entry. */
++/** Windows/Linux system tray: the way back to a hidden window and the explicit restart and quit entries. */
  
  import { Menu, nativeImage, Tray } from 'electron'
  import type { DesktopLocale } from './locale.ts'
@@ -964,6 +996,29 @@ index b2ce416..b462f28 100644
    readonly iconPath: string
    readonly locale: () => DesktopLocale
    /** Show and focus the primary window. */
+   readonly open: () => void
++  /** Request a relaunch through the same confirmation as every other quit entry. */
++  readonly restart: () => void
+   /** Request quit through the same confirmation as every other quit entry. */
+   readonly quit: () => void
+ }
+@@ -18,7 +20,7 @@ export interface DesktopTrayOptions {
+ export class DesktopTray {
+   private tray: Tray | undefined
+ 
+-  /** @param options - Icon path, locale reader, and the open and quit actions. */
++  /** @param options - Icon path, locale reader, and the open, restart and quit actions. */
+   constructor(private readonly options: DesktopTrayOptions) {
+     const tray = new Tray(nativeImage.createFromPath(options.iconPath))
+     this.tray = tray
+@@ -35,6 +37,7 @@ export class DesktopTray {
+     tray.setContextMenu(Menu.buildFromTemplate([
+       { label: messages.openApplication, click: () => { this.options.open() } },
+       { type: 'separator' },
++      { label: messages.restartApplication, click: () => { this.options.restart() } },
+       { label: messages.quitApplication, click: () => { this.options.quit() } },
+     ]))
+   }
 diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 index d0d7bb9..41faa39 100644
 --- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
@@ -1061,10 +1116,10 @@ index 5050e4f..d9ed00e 100644
  it('keeps private Desktop launchers out of the Host environment inherited by PTC', () => {
    const environment = { PATH: '/user/bin', HOME: '/user' }
 diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
-index 11c3a48..dfce9e3 100644
+index 11c3a48..32d4c3a 100644
 --- a/apps/desktop/tests/tray.spec.ts
 +++ b/apps/desktop/tests/tray.spec.ts
-@@ -27,11 +27,11 @@ vi.mock('electron', () => ({
+@@ -27,35 +27,38 @@ vi.mock('electron', () => ({
  
  afterEach(() => { native.trays.length = 0; native.menus.length = 0; vi.clearAllMocks() })
  
@@ -1072,13 +1127,15 @@ index 11c3a48..dfce9e3 100644
 +function setup(locale = 'en', iconPath = 'C:/app/resources/tray.ico') {
    let current = resolveDesktopLocale(locale)
    const open = vi.fn()
++  const restart = vi.fn()
    const quit = vi.fn()
 -  const tray = new DesktopTray({ iconPath: 'C:/app/resources/tray.ico', locale: () => current, open, quit })
-+  const tray = new DesktopTray({ iconPath, locale: () => current, open, quit })
-   return { tray, open, quit, native: native.trays[0]!, setLocale: (next: string) => { current = resolveDesktopLocale(next) } }
+-  return { tray, open, quit, native: native.trays[0]!, setLocale: (next: string) => { current = resolveDesktopLocale(next) } }
++  const tray = new DesktopTray({ iconPath, locale: () => current, open, restart, quit })
++  return { tray, open, restart, quit, native: native.trays[0]!, setLocale: (next: string) => { current = resolveDesktopLocale(next) } }
  }
  
-@@ -39,12 +39,12 @@ function labels(menu: MenuItemConstructorOptions[]): (string | undefined)[] {
+ function labels(menu: MenuItemConstructorOptions[]): (string | undefined)[] {
    return menu.map(item => item.type === 'separator' ? 'separator' : item.label)
  }
  
@@ -1088,21 +1145,35 @@ index 11c3a48..dfce9e3 100644
 -  expect(f.native.image).toEqual({ path: 'C:/app/resources/tray.ico' })
 -  expect(f.native.setToolTip).toHaveBeenCalledWith('DeepSeek Harness')
 -  expect(labels(native.menus[0]!)).toEqual(['Open DeepSeek Harness', 'separator', 'Quit DeepSeek Harness'])
-+it.each(['C:/app/resources/tray.ico', '/opt/dsh-workbench/resources/icon.png'])('shows %s with its name and an Open / Quit menu', (iconPath) => {
++it.each(['C:/app/resources/tray.ico', '/opt/dsh-workbench/resources/icon.png'])('shows %s with its name and an Open / Restart / Quit menu', (iconPath) => {
 +  const f = setup('en', iconPath)
 +  expect(native.createFromPath).toHaveBeenCalledWith(iconPath)
 +  expect(f.native.image).toEqual({ path: iconPath })
 +  expect(f.native.setToolTip).toHaveBeenCalledWith('dsh-workbench')
-+  expect(labels(native.menus[0]!)).toEqual(['Open dsh-workbench', 'separator', 'Quit dsh-workbench'])
++  expect(labels(native.menus[0]!)).toEqual(['Open dsh-workbench', 'separator', 'Restart', 'Quit dsh-workbench'])
    expect(f.native.setContextMenu).toHaveBeenCalledWith({ template: native.menus[0] })
  })
  
-@@ -63,7 +63,7 @@ it('relabels the menu in the current locale and ignores relabel after disposal',
+-it('opens the window on a single click and routes menu entries to the open and quit actions', () => {
++it('opens the window on a single click and routes menu entries to the open, restart and quit actions', () => {
+   const f = setup()
+   f.native.emit('click')
+   expect(f.open).toHaveBeenCalledOnce()
+   const menu = native.menus[0]!
+   ;(menu[0] as { click: () => void }).click()
+   ;(menu[2] as { click: () => void }).click()
++  ;(menu[3] as { click: () => void }).click()
+   expect(f.open).toHaveBeenCalledTimes(2)
++  expect(f.restart).toHaveBeenCalledOnce()
+   expect(f.quit).toHaveBeenCalledOnce()
+ })
+ 
+@@ -63,7 +66,7 @@ it('relabels the menu in the current locale and ignores relabel after disposal',
    const f = setup()
    f.setLocale('zh')
    f.tray.relabel()
 -  expect(labels(native.menus[1]!)).toEqual(['打开 DeepSeek Harness', 'separator', '退出 DeepSeek Harness'])
-+  expect(labels(native.menus[1]!)).toEqual(['打开 dsh-workbench', 'separator', '退出 dsh-workbench'])
++  expect(labels(native.menus[1]!)).toEqual(['打开 dsh-workbench', 'separator', '重启', '退出 dsh-workbench'])
    f.tray.dispose()
    f.tray.dispose()
    expect(f.native.destroy).toHaveBeenCalledOnce()

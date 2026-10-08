@@ -48,9 +48,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.1-r3-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.1-r3-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.1-r3-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.1-r4-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/
