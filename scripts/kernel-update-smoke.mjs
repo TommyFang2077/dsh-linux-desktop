@@ -9,6 +9,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { fileHash, inventory } from '../build/update-core.mjs'
+import { installUserDesktop } from '../build/user-install.mjs'
 import { writeDesktopRuntime } from '../build/upstream/apps/desktop/lib/types/runtime-tree.js'
 
 const root = resolve(import.meta.dirname, '..')
@@ -18,7 +19,7 @@ const tar = require('tar')
 const { _electron } = require(require.resolve('playwright-core', { paths: [join(root, 'build/upstream/node_modules/.pnpm/node_modules')] }))
 const temporary = await fs.mkdtemp('/tmp/dsh-kernel-upgrade-smoke-')
 const desktop = JSON.parse(await fs.readFile(join(root, 'desktop.json'), 'utf8'))
-const executable = process.env.DSH_WORKBENCH_TEST_APP ?? join(temporary, 'application/opt/dsh-workbench/dsh-workbench')
+let executable = process.env.DSH_WORKBENCH_TEST_APP
 let application, server
 async function windowAt(ending) {
   for (let attempt = 0; attempt < 1200; attempt++) {
@@ -29,7 +30,19 @@ async function windowAt(ending) {
   throw new Error(`Window did not load: ${ending}`)
 }
 try {
-  if (!process.env.DSH_WORKBENCH_TEST_APP) execFileSync('dpkg-deb', ['--extract', join(root, `dist/dsh-workbench-${desktop.version}-x64.deb`), join(temporary, 'application')])
+  if (!executable) {
+    const name = `dsh-workbench-${desktop.version}-r${desktop.linuxRevision}-linux-x64.tar.gz`
+    const archive = join(root, 'dist', name)
+    const checksum = (await fs.readFile(join(root, 'dist/SHA256SUMS'), 'utf8')).split('\n')
+      .find(line => line.endsWith(`  ${name}`))?.split('  ')[0]
+    assert.match(checksum ?? '', /^[a-f0-9]{64}$/, 'The desktop archive must have a recorded SHA-256')
+    assert.equal(await fileHash(archive), checksum, 'Verify the desktop archive before executing its runtime')
+    await fs.mkdir(join(temporary, 'application-home'), { mode: 0o700 })
+    const installed = await installUserDesktop({ archive, sha256: checksum, version: desktop.version,
+      home: join(temporary, 'application-home'), root: join(temporary, 'application-home/Applications/dsh-linux-desktop'),
+      xdgDataHome: join(temporary, 'application-home/data') })
+    executable = installed.executable
+  }
   const resources = join(dirname(executable), 'resources')
   console.log('Preparing isolated kernel fixture')
   const candidate = join(temporary, 'candidate')

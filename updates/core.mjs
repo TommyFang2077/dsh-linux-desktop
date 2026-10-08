@@ -374,7 +374,7 @@ export class UpdateManager {
     })
   }
 
-  async installDesktop(prepareRestart, install, restart, format = 'tar.gz') {
+  async installDesktop(prepareRestart, install, restart) {
     return this.exclusive(async () => {
       if (this.state.pending) fail('请先完成内核重启，再更新桌面端')
       const { release } = this.candidates.desktop ?? fail('请先检查桌面更新')
@@ -382,11 +382,10 @@ export class UpdateManager {
         dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
       const directory = await fs.mkdtemp(join(this.root, '.desktop-'))
       try {
-        if (!['tar.gz', 'deb', 'rpm'].includes(format)) fail('未知桌面安装格式')
-        const asset = (format === 'tar.gz' ? release.asset : release.assets?.[format]) ?? fail('此发行缺少对应桌面安装包')
-        const path = join(directory, `desktop.${format}`)
+        const asset = release.asset
+        const path = join(directory, 'desktop.tar.gz')
         await this.download(asset, path)
-        const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision, format, size: asset.size,
+        const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision, size: asset.size,
           sha256: asset.sha256, prepareRestart, restart })
         return result !== null
       } finally { await fs.rm(directory, { recursive: true, force: true }) }

@@ -135,6 +135,39 @@ class BuildTests(unittest.TestCase):
             which.assert_not_called()
             bundle.assert_called_once()
 
+    def test_native_packages_are_home_bootstraps_and_refuse_root_launch(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(build, "APP", Path(directory)):
+            node = build.APP / ".desktop-build/targets/linux-x64/runtime/primary-runtime/dependencies/node/bin/node"
+            node.parent.mkdir(parents=True)
+            node.write_bytes(b"node")
+            archive = Path(directory) / "desktop.tar.gz"
+            archive.write_bytes(b"authenticated package payload")
+            output = Path(directory) / "out"
+            (output / "linux-unpacked/resources").mkdir(parents=True)
+            (output / "linux-unpacked/resources/icon.png").write_bytes(b"icon")
+
+            def package_tool(args, **kwargs):
+                if args[0] == "dpkg-deb":
+                    tree = Path(args[-2])
+                    launcher = (tree / "usr/bin/dsh-workbench").read_text()
+                    self.assertIn("[ \"$(/usr/bin/id -u)\" -ne 0 ]", launcher)
+                    self.assertIn("/usr/share/dsh-workbench", launcher)
+                    self.assertIn("$home/Applications/dsh-linux-desktop", launcher)
+                    self.assertIn('export HOME="$home"', launcher)
+                    self.assertNotIn("/opt/dsh-workbench", launcher)
+                    self.assertTrue((tree / "usr/share/dsh-workbench/desktop.tar.gz").is_file())
+                    Path(args[-1]).write_bytes(b"deb")
+                else:
+                    top = Path(args[args.index("--define") + 1].split(" ", 1)[1])
+                    rpm = top / "RPMS/x86_64/dsh-workbench.rpm"
+                    rpm.parent.mkdir(parents=True, exist_ok=True)
+                    rpm.write_bytes(b"rpm")
+
+            with patch.object(build.subprocess, "run", side_effect=package_tool):
+                build.package_bootstraps(output, archive)
+            self.assertEqual(len(list(output.glob("*.deb"))), 1)
+            self.assertEqual(len(list(output.glob("*.rpm"))), 1)
+
     def test_bundle_checks_primary_host_node_instead_of_electron_node(self):
         with tempfile.TemporaryDirectory() as directory:
             app = Path(directory)
@@ -153,12 +186,44 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "compatibility metadata differs"):
                     build.bundle()
 
+    def test_package_verifier_pins_bootstrap_identity_and_linux_revision(self):
+        for format, result in [
+            ("deb", ["dsh-workbench", "0.2.1~alpha.1-6", "amd64"]),
+            ("rpm", ["dsh-workbench", "0.2.1~alpha.1", "6", "x86_64"]),
+        ]:
+            with self.subTest(format=format), tempfile.TemporaryDirectory() as directory:
+                package = Path(directory) / f"bootstrap.{format}"
+                package.write_bytes(b"package")
+                output = "\n".join(result) if format == "rpm" else None
+                responses = ([output, "/usr/bin/dsh-workbench\n"] if format == "rpm"
+                             else [*result, "/usr/bin/dsh-workbench\n"])
+                with patch.object(build.subprocess, "check_output", side_effect=responses):
+                    build.verify_package(package, format)
+
     def test_required_system_packages_cannot_be_silently_missing(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(build, "DIST", Path(directory)):
             self.archive(build.DIST)
             with self.assertRaisesRegex(RuntimeError, "installer"):
                 build.verify(require_installers=True)
             self.assertFalse((build.DIST / "SHA256SUMS").exists())
+
+    def test_native_package_verification_rejects_opt_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "package"
+            package.write_bytes(b"package")
+            for format in ("deb", "rpm"):
+                for listing, rejected in (("/usr/bin/dsh-workbench\n", False), ("./opt/dsh-workbench/app\n", True)):
+                    identity = (["dsh-workbench", "0.2.1~alpha.1-6", "amd64"] if format == "deb"
+                                else "dsh-workbench\n0.2.1~alpha.1\n6\nx86_64")
+                    outputs = ([*identity, listing] if format == "deb" else [identity, listing])
+                    with self.subTest(format=format, listing=listing), patch.object(
+                        build.subprocess, "check_output", side_effect=outputs
+                    ):
+                        if rejected:
+                            with self.assertRaisesRegex(RuntimeError, "must not install"):
+                                build.verify_package(package, format)
+                        else:
+                            build.verify_package(package, format)
 
     def test_source_is_pinned_not_a_moving_branch(self):
         self.assertRegex(build.LOCK["commit"], r"^[0-9a-f]{40}$")

@@ -7,7 +7,6 @@ const require = createRequire(join(upstream, 'package.json'))
 const { build } = require(require.resolve('esbuild', { paths: [join(upstream, 'node_modules/.pnpm/node_modules')] }))
 const assets = join(root, 'build/workbench-assets')
 mkdirSync(assets, { recursive: true })
-copyFileSync(join(root, 'updates/install.py'), join(assets, 'install.py'))
 for (const file of ['updates.html', 'updates.js', 'updates.css', 'preload.cjs', 'plugin-cli.mjs']) {
   copyFileSync(join(root, 'updates', file), join(assets, file))
 }

@@ -5,7 +5,7 @@
 - **内核**：完整 dsh、WebUI、私有 Host 和配套运行时安装到既有 Electron 用户数据目录的 `updates/kernels/<SHA256>`。保留 Ed25519、全量清单、协议、Node 范围、数据兼容标识、隔离试启动、原子激活与启动失败回滚。
 - **HOME 桌面**：完整 Electron 程序归档安装到 `~/Applications/dsh-linux-desktop/versions/<SHA256>`。确认停止任务后原子切换 `current`，明确重启新版本路径，不调用 sudo、pkexec 或系统包管理器；保留兼容的已激活新内核。
 
-- **deb/rpm 桌面**：完整系统软件包安装到 `/opt/dsh-workbench`；选择签名清单中与当前系统安装匹配的 deb/rpm。停止任务后使用 pkexec 的系统授权弹窗；root 所有且不可写的安装器将下载包复制到 root 临时目录，重新校验摘要、大小、身份、架构与构建号，再执行 apt/dnf。成功后重启明确的系统 executable；失败恢复后端，不删除兼容的新内核。安装器及整个父目录链必须 root 所有、无组/其他写权限且无符号链接。未安装的解包试运行拒绝提权；HOME 安装版不查询或更新系统包。
+- **deb/rpm**：只将引导器、Node 验证/安装运行时和桌面归档作为 root 管理的静态载荷放在 `/usr/share/dsh-workbench`，并提供 `/usr/bin/dsh-workbench` 启动器。首次正常用户启动时，用包管理器信任的本地载荷摘要调用现有 HOME 安装器；程序与插件只从 `~/Applications/dsh-linux-desktop` 运行。root 调用明确拒绝；启动器不猜测桌面登录用户、不执行 Electron/插件，也不以提权身份访问 HOME。包管理器升级只更新引导载荷，不覆盖或降级已有 HOME 版本。
 
 产品名、应用 ID、Electron userData 与 `~/.dsh` 均不变。应用关闭或更新失败不清理用户配置、会话、插件和内核 pending/rollback 状态。`dataEpoch` 必须一致；只有确认数据格式双向兼容才可沿用，不能为升级便利而放宽。
 
@@ -23,11 +23,11 @@
 
 ## 首次安装与从 /opt 迁移
 
-当前旧系统版无法自动理解新桌面归档格式。首次迁移使用用户安装入口，不改旧安装目录属主、不调用旧的提权更新器。新默认归档只有 `app/` 一棵程序树，含自己的 Node 和自包含 `resources/app/workbench/install-user.mjs`。
+旧版 `/opt` 运行时无法自动理解新的引导包布局。通过包管理器升级时只替换旧系统程序为惰性引导载荷，不在 root 安装脚本中推断登录用户或启动用户代码；完全退出旧应用后，以普通用户从桌面入口启动，引导器才会将经包管理器认证的归档安装到 HOME。归档升级和 deb/rpm 首次安装最终都使用同一个 HOME 安装器。
 
 先独立认证下载的完整字节，再执行下载内容：签名发行用已固定的可信公钥；CI 手动安装核对仓库、成功 run 和提交，并核对 GitHub artifact API 的 ZIP digest，再核对其中 tar 的 SHA256SUMS。安装入口要求明确 `--archive`、`--sha256`、`--version`；摘要错误会在创建安装目录前失败。不能先运行未知下载的 Node 让它自己证明可信。
 
-迁移可使用已经信任的旧安装的自带 Node验证新归档，或认证后使用新归档的 Node，无需安装宿主 Node/Python。正式切换前完全退出旧应用，保留原数据位置；用户命令与同名用户菜单入口优先启动新版本。安装器拒绝覆盖无关命令或自定义入口。旧系统包、/opt、系统启动项和仓库外签名密钥保持原状；卸载旧包另行确认。
+归档安装直接运行归档内的 Node；deb/rpm 引导安装使用 root 管理载荷中的 Node 与同一安装器，全程以启动该引导器的普通用户运行，不依赖宿主 Node/Python。正式切换前完全退出旧应用，保留原数据位置；HOME 用户命令与菜单入口由现有安装器创建。安装器拒绝覆盖无关命令或自定义入口。更新引导包不迁移或重置配置、会话或签名密钥。
 
 `current` 和 `previous` 是受管理版本目录的链接；切换通过同目录临时链接加 rename 完成，不覆盖运行中的树。失败/取消或同步重启失败保留当前版本；显式 `--rollback` 可回到上一版本。保留旧树不等于自动检测 Electron 无法启动并回滚，这种守护机制暂不提供。进程中断留下安装锁时，确认没有安装进程后才能手工删除空 `.install-lock`。
 
@@ -37,13 +37,13 @@
 
 未首次公开发行前 URL 可能为 404，本地配置完整不代表更新服务已上线。私有部署可将通道设为 `null`，窗口会禁用该通道。发布清单与资产必须使用无凭据、无 fragment 的 HTTPS；只有 GitHub Release 同仓库/同文件名到 Release 下载 CDN 的有限跳转可接受，其他重定向仍拒绝。下载和抽取有大小、数量、路径、文件类型、权限与时间限制。
 
-内核 feed 保持 **schemaVersion 1**：签名 payload 包含完整文件清单摘要及 `asset`。桌面 feed 使用 **schemaVersion 2**：`channel: desktop`、`format: tar.gz`、单个 `asset`，保留版本、平台/架构、协议、dataEpoch、desktopRange/nodeRange、kernelRange/nodeVersion，并签名独立的 `linuxRevision` 正整数；新增 `assets: {deb, rpm}`，分别声明包 URL、大小与 SHA-256；签名同时覆盖用户归档与两个安装包。HOME 客户端继续选择 `asset`，系统客户端按已安装格式选择 `assets.deb/rpm`；缺包明确拒绝，不改用其他格式。签名覆盖完整 payload 原始字节。旧客户端应拒绝不认识的新格式，不降级签名验证或误触发系统安装。
+内核 feed 保持 **schemaVersion 1**：签名 payload 包含完整文件清单摘要及 `asset`。桌面 feed 使用 **schemaVersion 2**：`channel: desktop`、`format: tar.gz`、单个 `asset`，保留版本、平台/架构、协议、dataEpoch、desktopRange/nodeRange、kernelRange/nodeVersion，并签名独立的 `linuxRevision` 正整数；`assets: {deb, rpm}` 是给包管理器用户手动下载/升级引导包的签名附件。所有正在运行的应用客户端统一选择 `asset`，按现有用户安装器写入 HOME；更新不自动执行包管理器或授权弹窗。签名覆盖完整 payload 原始字节。旧客户端应拒绝不认识的新格式，不降级签名验证或误触发系统安装。
 
 用户拥有程序文件只解决写权限，不取消所签名载荷和实际文件的对应关系。`dsh-purge` 等工具的内核改写还涉及运行时完整性校验；此次只提供真实所选内核路径，不自动清洗、关闭审批/文件沙箱或替换外部插件配置。
 
 ## 离线签名
 
-生产私钥在仓库外的 Unix 权限文件系统保存，权限0600，不随程序或 artifact 分发。用户安装不移动已有 `~/.local/share/dsh-workbench` 签名目录。两个通道可共用现有 Ed25519密钥，不能为修复配置问题随意换钥。
+生产私钥在仓库外的 Unix 权限文件系统保存，权限0600，不随程序或 artifact 分发。用户安装不移动已有 `~/.local/share/dsh-workbench` 签名目录。手动下载的 deb/rpm 应先按签名清单验证来源和摘要；`apt install ./文件.deb` 或 `dnf install ./文件.rpm` 本身不替代这一步。安装后，引导器使用软件包内固定的 SHA-256 验证桌面归档；桌面和内核 OTA 仍验证 Ed25519 签名清单，不能为修复配置问题随意换钥。
 
 ```sh
 make package
@@ -54,9 +54,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.1-r5-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.1-r6-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.1-r6-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.1-r6-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/
@@ -79,4 +79,4 @@ make gui-smoke
 make kernel-smoke
 ```
 
-测试覆盖 HOME 安装和版本回退、归档身份和权限、签名/兼容性、恶意归档拒绝、失败/取消原子性、HOME 版已有系统包时仍不提权、系统包格式与签名检查、root 安装器父目录信任检查、包版本/构建号匹配、入口碰撞、正确重启路径和内核状态保持。GUI 使用隔离 HOME/XDG、摘要验证后的用户归档、沙箱开启和真实1×1图片预览，不请求模型、不改变真实用户配置。真实用户迁移在新归档验证后单独确认。
+测试覆盖 HOME 安装和版本回退、归档身份和权限、签名/兼容性、恶意归档拒绝、失败/取消原子性、统一用户级更新、包版本/构建号匹配、软件包禁止 `/opt` 路径、入口碰撞、正确重启路径和内核状态保持。GUI 使用隔离 HOME/XDG、摘要验证后的用户归档、沙箱开启和真实1×1图片预览，不请求模型、不改变真实用户配置。真实用户迁移在新归档验证后单独确认。

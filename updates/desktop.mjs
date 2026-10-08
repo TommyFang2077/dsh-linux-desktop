@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { UpdateManager } from './core.mjs'
 import { ensureMarket } from './market.mjs'
-import { installedFormat, installSystemDesktop } from './system-install.mjs'
 import { detectUserDesktop, installUserDesktop } from './user-install.mjs'
 
 const execute = promisify(execFile)
@@ -93,26 +92,17 @@ export async function createWorkbenchUpdates(options) {
         type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : '桌面端'}至 ${version}${channel === 'desktop' ? `（Linux r${manager.status().desktop.availableLinuxRevision}）` : ''}？`,
         detail: channel === 'kernel'
           ? '下载并校验完整内核，在隔离目录试启动；确认停止当前任务后重启应用。不会安装桌面软件包。'
-          : userDesktop
-            ? '下载并校验完整桌面归档，确认停止任务后切换 HOME 内的用户版本并重启。不需要 sudo，不替换兼容的新内核。'
-            : '下载并校验对应 deb/rpm，停止任务后通过系统授权弹窗安装并重启。保留兼容的新内核与用户数据。',
+          : '下载并校验完整桌面归档，确认停止任务后切换 HOME 内的用户版本并重启。不需要 sudo，不替换兼容的新内核。',
         buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
       })
       if (answer.response !== 1) return { status: manager.status() }
       try {
         let installed
         if (channel === 'kernel') installed = await manager.installKernel(options.prepareRestart, options.restart)
-        else {
-          if (userDesktop) installed = await manager.installDesktop(options.prepareRestart, artifact => installUserDesktop({
-            ...artifact, root: userDesktop.root,
-            extract: (archive, destination) => extract(archive, destination, 'desktop'),
-          }), options.restart)
-          else {
-            const format = await installedFormat(process.execPath)
-            installed = await manager.installDesktop(options.prepareRestart,
-              artifact => installSystemDesktop(artifact, resources), options.restart, format)
-          }
-        }
+        else installed = await manager.installDesktop(options.prepareRestart, artifact => installUserDesktop({
+          ...artifact, ...(userDesktop ? { root: userDesktop.root } : {}),
+          extract: (archive, destination) => extract(archive, destination, 'desktop'),
+        }), options.restart)
         if (installed) options.finishRestart()
       } catch (error) {
         await options.recover()

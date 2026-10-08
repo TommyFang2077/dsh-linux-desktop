@@ -39,5 +39,6 @@ test('packaged Linux Hosts advertise the actual selected kernel, not an assumed 
   assert.equal(environment.DSH_BASE, '/home/user/.config/dsh-workbench/updates/kernels/kernel/dsh/node_modules/@deepseek-ai')
   assert.equal(environment.DSH_DESKTOP_INSTALL, '/home/user/Applications/dsh-linux-desktop/versions/desktop')
   const adapter = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
-  assert.match(adapter, /if \(userDesktop\) installed = await manager.installDesktop/)
+  assert.match(adapter, /else installed = await manager\.installDesktop\(options\.prepareRestart, artifact => installUserDesktop/)
+  assert.doesNotMatch(adapter, /installSystemDesktop|installedFormat|system-install\.mjs/)
 })

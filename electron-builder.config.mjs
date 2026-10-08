@@ -75,26 +75,13 @@ export default {
     { from: join(root, 'resources/dsh.ico'), to: 'icon.ico' },
   ],
   linux: {
-    target: ['deb', 'rpm'],
+    target: ['dir'],
     executableName: 'dsh-workbench',
     syncDesktopName: true,
     icon,
     category: 'Development',
     synopsis: 'Unofficial DeepSeek Harness Linux desktop',
     maintainer: 'dsh-workbench contributors',
-  },
-  deb: {
-    compression: 'gz',
-    fpm: ['--deb-compression-level', '1'],
-    depends: [
-      'libgtk-3-0 | libgtk-3-0t64', 'libnss3', 'libxss1', 'libxtst6', 'libgbm1',
-      'libasound2 | libasound2t64', 'libatspi2.0-0 | libatspi2.0-0t64', 'xdg-utils', 'python3', 'pkexec', 'apt',
-    ],
-  },
-  rpm: {
-    compression: 'gzip',
-    fpm: ['--rpm-rpmbuild-define', '_rpmformat 4', '--rpm-rpmbuild-define', '_smp_build_ncpus 2', '--rpm-compression-level', '1', '--log', 'info'],
-    depends: ['gtk3', 'nss', 'libXScrnSaver', 'libXtst', 'libdrm', 'mesa-libgbm', 'alsa-lib', 'at-spi2-core', 'xdg-utils', 'python3', 'polkit', 'dnf'],
   },
   publish: null,
 }

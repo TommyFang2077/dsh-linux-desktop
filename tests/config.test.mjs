@@ -8,11 +8,11 @@ import { stripTypeScriptTypes } from 'node:module'
 import config, { hardenPermissions } from '../electron-builder.config.mjs'
 import { desktopTargetPlatform, resolveDesktopBuildTarget } from '../build/upstream/apps/desktop/scripts/desktop-build-paths.mjs'
 
-test('Linux x64 builds deb/rpm and keeps its independent identity with independent identity', () => {
+test('Linux x64 stages an unpacked desktop and keeps its independent identity', () => {
   assert.equal(resolveDesktopBuildTarget({}, 'linux', 'x64'), 'linux-x64')
   assert.deepEqual(desktopTargetPlatform('linux-x64'), { platform: 'linux', arch: 'x64' })
   assert.throws(() => resolveDesktopBuildTarget({}, 'linux', 'arm64'), /unsupported target/)
-  assert.deepEqual(config.linux.target, ['deb', 'rpm'])
+  assert.deepEqual(config.linux.target, ['dir'])
   assert.equal(config.linux.executableName, 'dsh-workbench')
   assert.equal(config.extraMetadata.name, 'dsh-workbench')
   assert.equal(config.extraMetadata.desktopName, 'dsh-workbench.desktop')
@@ -25,8 +25,8 @@ test('Linux x64 builds deb/rpm and keeps its independent identity with independe
   assert.equal(config.extraMetadata.dshMandatoryUpdatePolicy, undefined)
   assert.equal(config.publish, null)
   assert.equal(config.asar, false)
-  assert.ok(config.deb.depends.includes('pkexec'))
-  assert.ok(config.rpm.depends.includes('dnf'))
+  assert.equal(config.deb, undefined)
+  assert.equal(config.rpm, undefined)
   assert.deepEqual(config.protocols, [])
 })
 

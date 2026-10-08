@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import runpy
 import shutil
 import subprocess
 import tarfile
@@ -106,6 +105,97 @@ def archive_entry(info):
     return info
 
 
+def package_bootstraps(directory, archive):
+    """Build native packages whose root-owned files only bootstrap a HOME install."""
+    directory = Path(directory)
+    version = DESKTOP["version"]
+    revision = DESKTOP["linuxRevision"]
+    with archive.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    node = APP / ".desktop-build/targets/linux-x64/runtime/primary-runtime/dependencies/node/bin/node"
+    installer = ROOT / "build/install-user.mjs"
+    if not node.is_file() or not installer.is_file():
+        raise RuntimeError("HOME bootstrap requires the bundled Node runtime and authenticated installer")
+    with tempfile.TemporaryDirectory(prefix="dsh-native-package-", dir="/tmp") as temporary:
+        stage = Path(temporary)
+        tree = stage / "root"
+        shared = tree / "usr/share/dsh-workbench"
+        (tree / "usr/bin").mkdir(parents=True)
+        shared.mkdir(parents=True)
+        (tree / "usr/share/applications").mkdir(parents=True)
+        icons = tree / "usr/share/icons/hicolor/512x512/apps"
+        icons.mkdir(parents=True)
+        shutil.copyfile(ROOT / "build/icon.png", icons / "dsh-workbench.png")
+        shutil.copyfile(archive, shared / "desktop.tar.gz")
+        shutil.copyfile(node, shared / "node")
+        shutil.copyfile(installer, shared / "install-user.mjs")
+        (shared / "node").chmod(0o755)
+        (shared / "install-user.mjs").chmod(0o644)
+        (shared / "desktop.tar.gz").chmod(0o644)
+        launcher = tree / "usr/bin/dsh-workbench"
+        launcher.write_text(f"""#!/bin/sh
+set -eu
+[ \"$(/usr/bin/id -u)\" -ne 0 ] || {{ echo 'Launch dsh-workbench as a normal user, not root.' >&2; exit 1; }}
+uid=$(/usr/bin/id -u)
+record=$(/usr/bin/getent passwd \"$uid\") || {{ echo 'Cannot resolve current user home.' >&2; exit 1; }}
+home=$(printf '%s\\n' \"$record\" | /usr/bin/cut -d: -f6)
+case \"$home\" in /*) ;; *) echo 'Invalid current user home.' >&2; exit 1;; esac
+export HOME=\"$home\"
+root=\"$home/Applications/dsh-linux-desktop\"
+payload=/usr/share/dsh-workbench
+if [ ! -x \"$root/current/dsh-workbench\" ]; then
+  /usr/bin/env -i HOME=\"$home\" PATH=/usr/bin:/bin \"$payload/node\" \"$payload/install-user.mjs\" \\
+    --archive \"$payload/desktop.tar.gz\" --sha256 {digest} --version {version} --root \"$root\"
+fi
+exec \"$root/current/dsh-workbench\" \"$@\"
+""")
+        launcher.chmod(0o755)
+        desktop = tree / "usr/share/applications/dsh-workbench.desktop"
+        desktop.write_text("[Desktop Entry]\nName=dsh-workbench\nExec=/usr/bin/dsh-workbench %U\nTerminal=false\nType=Application\nIcon=dsh-workbench\nStartupWMClass=dsh-workbench\nCategories=Development;\n")
+        desktop.chmod(0o644)
+        for path in (tree, *tree.rglob("*")):
+            path.chmod(0o755 if path.is_dir() or path in (launcher, shared / "node") else 0o644)
+        deb = stage / f"dsh-workbench-{version}-r{revision}-linux-x64.deb"
+        control = tree / "DEBIAN"
+        control.mkdir()
+        depends = "libgtk-3-0 | libgtk-3-0t64, libnss3, libxss1, libxtst6, libgbm1, libasound2 | libasound2t64, libatspi2.0-0 | libatspi2.0-0t64, xdg-utils"
+        (control / "control").write_text(f"Package: dsh-workbench\nVersion: {version.replace('-', '~')}-{revision}\nArchitecture: amd64\nMaintainer: dsh-workbench contributors\nDepends: {depends}\nDescription: HOME-installed DeepSeek Harness desktop bootstrap\n")
+        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", tree, deb], check=True)
+        shutil.copyfile(deb, directory / deb.name)
+        specroot = stage / "rpmbuild"
+        for part in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"):
+            (specroot / part).mkdir(parents=True)
+        spec = specroot / "SPECS/dsh-workbench.spec"
+        spec.write_text(f"""Name: dsh-workbench
+Version: {version.replace('-', '~')}
+Release: {revision}
+Summary: HOME-installed DeepSeek Harness desktop bootstrap
+License: MIT
+BuildArch: x86_64
+Requires: gtk3, nss, libXScrnSaver, libXtst, libdrm, mesa-libgbm, alsa-lib, at-spi2-core, xdg-utils
+
+%description
+Installs a root-owned inert bootstrap; the Electron application runs from the user's HOME.
+
+%install
+mkdir -p %{{buildroot}}/usr/bin %{{buildroot}}/usr/share
+cp -a {tree}/usr/bin/dsh-workbench %{{buildroot}}/usr/bin/
+cp -a {tree}/usr/share/dsh-workbench %{{buildroot}}/usr/share/
+cp -a {tree}/usr/share/applications %{{buildroot}}/usr/share/
+cp -a {tree}/usr/share/icons %{{buildroot}}/usr/share/
+
+%files
+/usr/bin/dsh-workbench
+/usr/share/dsh-workbench
+/usr/share/applications/dsh-workbench.desktop
+/usr/share/icons/hicolor/512x512/apps/dsh-workbench.png
+""")
+        subprocess.run(["rpmbuild", "-bb", "--define", f"_topdir {specroot}", spec], check=True)
+        rpm = next((specroot / "RPMS/x86_64").glob("*.rpm"))
+        target = directory / f"dsh-workbench-{version}-r{revision}-linux-x64.rpm"
+        shutil.copyfile(rpm, target)
+
+
 def bundle():
     run("node", ROOT / "scripts/build-icons.mjs", cwd=ROOT)
     prepared = APP / ".desktop-build/targets/linux-x64"
@@ -122,15 +212,18 @@ def bundle():
         shutil.copyfile(ROOT / "build/icon.png", output / "icon.png")
         (output / "icon.png").chmod(0o644)
         pnpm("exec", "electron-builder", "--config", ROOT / "electron-builder.config.mjs",
-             "--linux", "deb", "rpm", "--x64", "--publish", "never", cwd=APP, env=env)
+             "--linux", "dir", "--x64", "--publish", "never", cwd=APP, env=env)
         pnpm("exec", "tsx", ROOT / "scripts/smoke.mts", env=env)
         with tarfile.open(desktop_archive(output), "w:gz", compresslevel=1) as archive:
             archive.add(output / "linux-unpacked", arcname="app", filter=archive_entry)
+        package_bootstraps(output, desktop_archive(output))
         verify(output, require_installers=True)
         DIST.mkdir(exist_ok=True)
         for file in (desktop_archive(output), *output.glob("*.deb"), *output.glob("*.rpm"),
                      output / "SHA256SUMS", output / "build-info.json"):
-            shutil.copyfile(file, DIST / file.name)
+            target = DIST / file.name
+            shutil.copyfile(file, target)
+            target.chmod(0o644)
 
 
 def verify_archive(file, destination=None):
@@ -201,10 +294,22 @@ def launch():
 def verify_package(file, format):
     if file.is_symlink() or not file.is_file() or not 0 < file.stat().st_size <= 1024 ** 3:
         raise RuntimeError("A regular, bounded installer is required")
-    helper = runpy.run_path(str(ROOT / "updates/install.py"))
-    def execute(args, **kwargs):
-        return subprocess.check_output([shutil.which(Path(args[0]).name) or args[0], *args[1:]], **kwargs)
-    helper["verify_identity"](file, format, DESKTOP["version"], DESKTOP["linuxRevision"], execute)
+    version = DESKTOP["version"].replace("-", "~")
+    if format == "deb":
+        actual = [subprocess.check_output(["dpkg-deb", "--field", file, field], text=True).strip()
+                  for field in ("Package", "Version", "Architecture")]
+        expected = ["dsh-workbench", f"{version}-{DESKTOP['linuxRevision']}", "amd64"]
+    elif format == "rpm":
+        actual = subprocess.check_output(["rpm", "-qp", "--queryformat", "%{NAME}\\n%{VERSION}\\n%{RELEASE}\\n%{ARCH}", file], text=True).splitlines()
+        expected = ["dsh-workbench", version, str(DESKTOP["linuxRevision"]), "x86_64"]
+    else:
+        raise RuntimeError("Unsupported desktop package format")
+    if actual != expected:
+        raise RuntimeError(f"Package identity/version/revision/architecture mismatch: {file.name}")
+    command = ["dpkg-deb", "--contents", str(file)] if format == "deb" else ["rpm", "-qpl", str(file)]
+    listing = subprocess.check_output(command, text=True)
+    if "/opt/" in listing or "/opt\n" in listing:
+        raise RuntimeError("Native packages must not install anything under /opt")
 
 
 def verify(directory=None, require_installers=False):
@@ -221,8 +326,13 @@ def verify(directory=None, require_installers=False):
             verify_package(package, format)
             with package.open("rb") as stream:
                 checksums.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {package.name}\n")
-    (directory / "SHA256SUMS").write_text("".join(checksums))
-    (directory / "build-info.json").write_text(json.dumps({**LOCK, "desktopVersion": DESKTOP["version"], "linuxRevision": DESKTOP["linuxRevision"], "electronVersion": DESKTOP["electronVersion"], "target": "linux-x64", "distribution": "deb-rpm-and-user-archive", "official": False}, indent=2) + "\n")
+    for name, contents in (("SHA256SUMS", "".join(checksums)),
+                           ("build-info.json", json.dumps({**LOCK, "desktopVersion": DESKTOP["version"],
+                            "linuxRevision": DESKTOP["linuxRevision"], "electronVersion": DESKTOP["electronVersion"],
+                            "target": "linux-x64", "distribution": "deb-rpm-and-user-archive", "official": False}, indent=2) + "\n")):
+        path = directory / name
+        path.write_text(contents)
+        path.chmod(0o644)
 
 
 def main():
