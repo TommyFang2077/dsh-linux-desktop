@@ -109,6 +109,64 @@ test('signed kernel trial, atomic activation, healthy commit and desktop reinsta
   assert.equal((await reinstalledDesktop.boot()).version, '1.1.0')
 })
 
+test('full desktop epoch upgrade preserves old pointers but starts only its bundled kernel', async t => {
+  const f = await fixture(t)
+  await f.manager.check('kernel')
+  await f.manager.installKernel(async () => true, () => {})
+  const old = new UpdateManager(f.options)
+  await old.boot()
+  await old.markHealthy()
+  const before = await fs.readFile(join(f.options.root, 'state.json'), 'utf8')
+  const options = { ...f.options,
+    desktop: { ...f.options.desktop, version: '2.0.0', dataEpoch: 'schema-2' },
+    bundled: { ...f.options.bundled, version: '2.0.0', dataEpoch: 'schema-2' },
+    verifyKernel: async () => assert.fail('the superseded tree must never execute'),
+  }
+  const upgraded = new UpdateManager(options)
+  assert.equal((await upgraded.boot()).version, '2.0.0')
+  assert.match(upgraded.notice, /数据备份/)
+  assert.equal(await fs.readFile(join(f.options.root, 'state.json'), 'utf8'), before)
+  assert.equal(await fs.readFile(join(f.options.root, 'kernels', f.release.asset.sha256, 'dsh/entry.js'), 'utf8'), 'kernel entry\n')
+  await assert.rejects(upgraded.readKernel(f.release.asset.sha256), /不兼容/)
+  for (const version of ['1.0.0', '1.1.0']) {
+    await assert.rejects(new UpdateManager({ ...options, bundled: { ...options.bundled, version } }).boot(), /不兼容/)
+  }
+  const mismatched = signed({ ...f.release, asset: { ...f.release.asset, sha256: 'a'.repeat(64) } })
+  await fs.writeFile(join(f.options.root, 'kernels', f.release.asset.sha256, 'release.json'), JSON.stringify(mismatched))
+  await assert.rejects(new UpdateManager(options).boot(), /摘要不一致/)
+  const invalid = signed(f.release, generateKeyPairSync('ed25519').privateKey)
+  await fs.writeFile(join(f.options.root, 'kernels', f.release.asset.sha256, 'release.json'), JSON.stringify(invalid))
+  await assert.rejects(new UpdateManager(options).boot(), /签名/)
+})
+
+test('full desktop epoch upgrade retains the normal pending trial recovery lifecycle', async t => {
+  for (const pending of ['staged', 'booting']) {
+    await t.test(pending, async t => {
+      const f = await fixture(t)
+      await f.manager.check('kernel')
+      await f.manager.installKernel(async () => true, () => {})
+      if (pending === 'booting') await new UpdateManager(f.options).boot()
+      const options = { ...f.options,
+        desktop: { ...f.options.desktop, version: '2.0.0', dataEpoch: 'schema-2' },
+        bundled: { ...f.options.bundled, version: '2.0.0', dataEpoch: 'schema-2' },
+        verifyKernel: async () => assert.fail('pending old-epoch tree must never execute'),
+      }
+      const upgraded = new UpdateManager(options)
+      assert.equal((await upgraded.boot()).version, '2.0.0')
+      assert.equal(upgraded.state.active, pending === 'staged' ? f.release.asset.sha256 : null)
+      assert.equal(upgraded.state.pending, pending === 'staged' ? 'booting' : null)
+      const interrupted = new UpdateManager(options)
+      assert.equal((await interrupted.boot()).version, '2.0.0')
+      assert.deepEqual(interrupted.state, { schemaVersion: 1, active: null, previous: null, pending: null })
+      upgraded.state = { schemaVersion: 1, active: null, previous: f.release.asset.sha256, pending: 'booting' }
+      assert.equal(await upgraded.rollback(), true)
+      assert.equal(upgraded.selected.version, '2.0.0')
+      assert.deepEqual(upgraded.state, { schemaVersion: 1, active: f.release.asset.sha256, previous: null, pending: null })
+      assert.equal(await fs.readFile(join(f.options.root, 'kernels', f.release.asset.sha256, 'dsh/entry.js'), 'utf8'), 'kernel entry\n')
+    })
+  }
+})
+
 test('process crash before health acknowledgement restores previous kernel on the next launch', async t => {
   const f = await fixture(t)
   await f.manager.check('kernel')
@@ -152,6 +210,20 @@ test('signature failure, wrong protocol, incompatible Node and data epoch are re
   f.responses.set('https://updates.test/kernel.json', Buffer.from(JSON.stringify(signed({ ...f.release, protocol: 5 }))))
   await assert.rejects(f.manager.check('kernel'), /不兼容/)
   assert.equal(f.manager.status().kernel.available, null)
+})
+
+test('a new data epoch blocks both OTA channels before activation', async t => {
+  const f = await fixture(t)
+  const before = JSON.stringify(f.manager.state)
+  const kernel = { ...f.release, dataEpoch: 'next-epoch' }
+  const desktop = { ...kernel, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    linuxRevision: 1, version: '1.2.0', nodeVersion: '24.18.1', kernelRange: '>=1 <2' }
+  for (const [channel, release] of [['kernel', kernel], ['desktop', desktop]]) {
+    f.responses.set(`https://updates.test/${channel}.json`, Buffer.from(JSON.stringify(signed(release))))
+    await assert.rejects(f.manager.check(channel), /不兼容/)
+    assert.equal(f.manager.status()[channel].available, null)
+    assert.equal(JSON.stringify(f.manager.state), before)
+  }
 })
 
 test('truncated and corrupt downloads, failed probes, and cancellation do not change active version', async t => {

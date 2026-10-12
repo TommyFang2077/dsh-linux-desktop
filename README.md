@@ -15,10 +15,10 @@
 
 ```sh
 # Ubuntu / Debian
-sudo apt install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.deb
+sudo apt install ./dsh-workbench-0.2.1-alpha.2-r1-linux-x64.deb
 
 # Fedora / RHEL
-sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.rpm
+sudo dnf install ./dsh-workbench-0.2.1-alpha.2-r1-linux-x64.rpm
 ```
 
 安装后，从应用菜单打开 **dsh-workbench**。首次启动会自动将程序安装到 HOME，请稍等；不需要手动解压，也不需要另外安装 Node.js 或 Python。
@@ -28,6 +28,8 @@ sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.rpm
 ## 更新
 
 打开 **设置 → 通用 → 软件更新**，检查并更新桌面或内核。两者独立更新，下载后会校验签名和兼容性。
+
+**alpha.1 → alpha.2 是跨数据兼容边界升级**：旧版应用内两个 OTA 通道会阻止直接升级。请完全退出应用，备份 `~/.dsh` 和 `~/.config/dsh-workbench`，再按下方 tar.gz 完整归档流程安装；仅更新 deb/rpm 引导包不会替换已有 HOME 版本。升级后新增会话记录不保证被 alpha.1 读取，回退须同时恢复升级前的数据备份。原因和细节见 [升级边界](docs/updates.md#alpha1--alpha2-升级边界)。
 
 托盘菜单提供「打开」「重启」「退出」。重启或退出前，如果有正在执行的任务，应用会请求确认。
 
@@ -56,13 +58,13 @@ sudo dnf install ./dsh-workbench-0.2.1-alpha.1-r7-linux-x64.rpm
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.1-r7-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"
 "$temporary/app/resources/runtime/primary-runtime/dependencies/node/bin/node" \
   "$temporary/app/resources/app/workbench/install-user.mjs" \
-  --archive "$archive" --sha256 "$checksum" --version 0.2.1-alpha.1
+  --archive "$archive" --sha256 "$checksum" --version 0.2.1-alpha.2
 ~/.local/bin/dsh-workbench
 ```
 

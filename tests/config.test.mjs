@@ -30,6 +30,15 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
   assert.deepEqual(config.protocols, [])
 })
 
+test('alpha.2 declares its data boundary independently of the unchanged Host wire protocol', () => {
+  const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
+  assert.equal(desktop.version, '0.2.1-alpha.2')
+  assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.2')
+  assert.equal(desktop.protocol, 4)
+  assert.equal(desktop.desktopRange, '>=0.2.1-alpha.2 <0.3.0')
+  assert.equal(desktop.kernelRange, '>=0.2.1-alpha.2 <0.3.0')
+})
+
 test('Linux pins the tested Electron runtime without changing the official shell version', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
   assert.equal(desktop.electronVersion, '44.5.1')
@@ -173,7 +182,8 @@ test('normal, selected and candidate Linux Hosts use the Node from their own pay
     DesktopProjectManager: class { async applyRelease() {} },
     DesktopHostUncleanExitError: class extends Error {},
     DesktopHostProcess: class {
-      constructor(node, _dsh, _profile, _inspect, _environment, _failure, primary) {
+      constructor(node, _dsh, _profile, _inspect, _environment, _failure, primary, launchers) {
+        assert.equal(launchers.pnpm, '/candidate/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs')
         assert.equal(node, join('/candidate/runtime/primary-runtime', 'dependencies/node/bin/node'))
         assert.equal(primary, '/candidate/runtime/primary-runtime')
       }
@@ -183,11 +193,15 @@ test('normal, selected and candidate Linux Hosts use the Node from their own pay
     fetch: async () => ({ ok: true, headers: { getSetCookie: () => [], get: () => 'text/html' } }),
   }
   const resources = runInNewContext(stripTypeScriptTypes(`${resourcesSource}; runtimeResources`), context)
-  assert.equal((await resources()).node, '/bundled/resources/runtime/primary-runtime/dependencies/node/bin/node')
+  const bundled = await resources()
+  assert.equal(bundled.node, '/bundled/resources/runtime/primary-runtime/dependencies/node/bin/node')
+  assert.equal(bundled.pnpm, '/bundled/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs')
   context.app.isPackaged = false
   assert.equal((await resources()).node, '/development/primary-runtime/dependencies/node/bin/node')
   context.selectedKernel = { dsh: '/selected/dsh', runtime: '/selected/runtime' }
-  assert.equal((await resources()).node, '/selected/runtime/primary-runtime/dependencies/node/bin/node')
+  const selected = await resources()
+  assert.equal(selected.node, '/selected/runtime/primary-runtime/dependencies/node/bin/node')
+  assert.equal(selected.pnpm, '/selected/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs')
   const probe = runInNewContext(stripTypeScriptTypes(`${probeSource}; probeWorkbenchKernel`), context)
   await probe({ dsh: '/candidate/dsh', runtime: '/candidate/runtime' })
   assert.deepEqual(calls, ['/bundled/resources/runtime/primary-runtime', '/development/primary-runtime',

@@ -205,7 +205,7 @@ export class UpdateManager {
     if (this.state.pending === 'booting') await this.rollback('上次新内核启动中断，已恢复原内核')
     if (this.state.active) {
       try {
-        const selected = await this.readKernel(this.state.active)
+        const selected = await this.readKernel(this.state.active, true)
         if (semver.gte(selected.version, this.bundled.version)) this.selected = selected
         if (this.state.pending === 'staged') {
           this.state.pending = 'booting'
@@ -214,19 +214,25 @@ export class UpdateManager {
       } catch (error) {
         if (!this.state.pending) throw error
         await this.rollback(`新内核校验失败，已回滚：${error.message}`)
-        if (this.state.active) this.selected = await this.readKernel(this.state.active)
+        if (this.state.active) this.selected = await this.readKernel(this.state.active, true)
       }
     }
     return this.selected
   }
 
-  async readKernel(id) {
+  async readKernel(id, allowSuperseded = false) {
     if (!digest(id)) fail('内核标识无效')
     const directory = join(this.root, 'kernels', id)
     if ((await fs.lstat(directory)).isSymbolicLink()) fail('内核目录不能为符号链接')
     const envelope = JSON.parse(await fs.readFile(join(directory, 'release.json'), 'utf8'))
     const release = verifyFeed(envelope, this.source('kernel').publicKey, 'kernel')
     if (release.asset.sha256 !== id) fail('内核指针与摘要不一致')
+    // A full desktop installation may supersede an older data epoch; never execute that old tree.
+    if (allowSuperseded && release.dataEpoch !== this.desktop.dataEpoch
+      && semver.lt(release.version, this.bundled.version)) {
+      this.notice = '完整桌面已升级，使用自带内核；旧数据版本的内核文件保留，回退须恢复升级前数据备份'
+      return this.bundled
+    }
     checkCompatibility(release, this.desktop)
     await verifyKernelTree(directory, release)
     await this.verifyKernel(join(directory, 'dsh'), release.version)
@@ -403,7 +409,7 @@ export class UpdateManager {
     await this.save()
     this.selected = this.bundled
     if (this.state.active) {
-      const previous = await this.readKernel(this.state.active)
+      const previous = await this.readKernel(this.state.active, true)
       if (semver.gte(previous.version, this.bundled.version)) this.selected = previous
     }
     return true

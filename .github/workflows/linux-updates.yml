@@ -131,7 +131,7 @@ jobs:
           flags=(--verify-tag --target "$GITHUB_SHA")
           if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-            --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
+            --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Alpha.1 to alpha.2 crosses a data compatibility boundary: both old in-app OTA channels intentionally block it. Quit the old app, back up ~/.dsh and ~/.config/dsh-workbench, verify and install the full tar.gz archive using the README instructions. Updating only deb/rpm does not replace an existing HOME installation. Downgrading to alpha.1 also requires restoring the pre-upgrade data backup. Independent signed updates continue within the alpha.2 data epoch.' \
             artifacts/dsh-workbench-*-linux-x64.tar.gz artifacts/dsh-workbench-*-linux-x64.deb artifacts/dsh-workbench-*-linux-x64.rpm artifacts/SHA256SUMS artifacts/build-info.json \
             artifacts/kernel-release/*.tgz artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json
           feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")

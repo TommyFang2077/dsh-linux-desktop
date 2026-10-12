@@ -11,6 +11,14 @@
 
 “官方内核”指固定官方源码的本项目 Linux 构建，不是官方托管的 Linux OTA。已核对的官方渠道没有这里所需的独立 Linux 内核签名载荷；仅安装 npm dsh 不包含完整桌面私有 Host 与支持运行时。
 
+## alpha.1 → alpha.2 升级边界
+
+alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部子代理目录写为 `subagent/catalog` version 2。虽然上游 Session 版本仍为 4，alpha.1 读取器会拒绝这些新记录，因此本发行使用新的 `dataEpoch: dsh-0.2.1-alpha.2`，不宣称双向数据兼容。
+
+这次跨 epoch 升级须完全退出旧应用，备份 `~/.dsh` 和既有 Electron 用户数据目录，再通过已验签的完整 alpha.2 桌面归档安装。旧版应用内的桌面与内核 OTA 都会按既有规则阻止跨 epoch 更新；并非清单缺失或下载故障。只更新 deb/rpm 引导包也不会替换已有 HOME 安装，应使用完整归档安装流程。新版保留已提交的旧内核指针与文件，但不会选用不兼容的 alpha.1 内核。尚未提交的试启动仍遵循原有 staged → booting → healthy 生命周期，启动中断时恢复 previous 指针；这不是冻结 pending 状态，也不恢复会话数据。其 pnpm 入口改在 `runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`。
+
+启用 alpha.2 后若需回到 alpha.1，必须同时恢复升级前的数据备份；仅切换程序或内核指针不恢复会话数据。alpha.2 同 epoch 的后续兼容版本仍走原有独立更新通道。
+
 ## 设置中的版本检查
 
 通用设置分别读取当前实际选用的内核、桌面壳版本与 Linux 构建号，并自动检查两条独立签名清单。最新发布与可安装更新分别表示：相同或更旧的发布仍显示其签名版本，但不会变为升级候选；协议或数据不兼容时显示错误，不绕过兼容检查。单个通道失败不隐藏另一通道结果，可以重试检查。
@@ -54,9 +62,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.1-r7-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.1-r7-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.1-r7-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/
