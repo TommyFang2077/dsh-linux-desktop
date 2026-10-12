@@ -208,18 +208,21 @@ index e6afd574..f6787b03 100644
    const environment = { ...scrubWindowsSigningEnvironment(process.env), NODE_OPTIONS: '',
      NARB_NATIVE_CACHE_DIR: cache, NARB_DISABLE_NATIVE_CACHE: '0' }
 diff --git a/apps/desktop/scripts/smoke-runtime.ts b/apps/desktop/scripts/smoke-runtime.ts
-index dec4f8fb..cd1b8fe2 100644
+index dec4f8fb..65b3ebbc 100644
 --- a/apps/desktop/scripts/smoke-runtime.ts
 +++ b/apps/desktop/scripts/smoke-runtime.ts
-@@ -1,5 +1,6 @@
+@@ -1,14 +1,16 @@
  /** Boot the materialized target runtime without access to a user's Harness profile. */
  
 +import assert from 'node:assert/strict'
  import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
  import { rm } from 'node:fs/promises'
  import { tmpdir } from 'node:os'
-@@ -9,6 +10,7 @@ import { promisify } from 'node:util'
- import { fileURLToPath } from 'node:url'
+ import { join } from 'node:path'
+ import { execFile } from 'node:child_process'
+ import { promisify } from 'node:util'
+-import { fileURLToPath } from 'node:url'
++import { fileURLToPath, pathToFileURL } from 'node:url'
  import { readPrimaryRuntime, workspaceDependencyPaths } from '../../../packages/skill/tool-workspace-dependencies/src/index.ts'
  import { DesktopHostProcess } from '../src/host-process.ts'
 +import { resolveDesktopHostNode } from '../src/node-environment.ts'
@@ -234,7 +237,21 @@ index dec4f8fb..cd1b8fe2 100644
    const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-smoke-'))
    const profile = join(home, 'profiles', 'desktop')
    const hostEnvironment = {
-@@ -88,6 +91,9 @@ import { Context } from '@deepseek-ai/cordis'
+@@ -59,8 +62,12 @@ export function apply(ctx) {
+     writeFileSync(join(installedPlugin, 'bundle.yml'), `- insert:\n    - id: ${installedName}\n      name: ${installedName}\n      inject: [webServer]\n`)
+     appendFileSync(join(profile, 'pnpm-workspace.yaml'), 'offline: true\nupdateNotifier: false\n')
+     const cli = join(root, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
++    // Match the Linux launcher: support files sit outside resources/app, so pass their physical path.
+     const runCli = (args: string[]) => promisify(execFile)(node,
+-      ['--expose-internals', cli, 'plugin', '--profile', 'desktop', ...args],
++      ['--expose-internals', '--input-type=module', '--eval',
++        `process.argv = ${JSON.stringify([node, cli, 'plugin', '--profile', 'desktop', ...args])};
++         const { runDesktopCli } = await import(${JSON.stringify(pathToFileURL(cli).href)});
++         await runDesktopCli(${JSON.stringify(root)}, ${JSON.stringify(resourcesRuntime)});`],
+       { cwd: home, env: { ...hostEnvironment, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000, windowsHide: true })
+     await runCli(['add', `file:${installedPlugin}`, '--offline', '--ignore-scripts'])
+     const installedEntry = join(profile, 'node_modules', installedName, 'index.js')
+@@ -88,6 +95,9 @@ import { Context } from '@deepseek-ai/cordis'
  import { inspect, promisify } from 'node:util'
  import { execFile } from 'node:child_process'
  import { readFile } from 'node:fs/promises'
@@ -244,7 +261,7 @@ index dec4f8fb..cd1b8fe2 100644
  export function apply(ctx) {
    if (!(ctx instanceof Context)) throw new Error('desktop runtime: external plugin loaded another Cordis instance')
    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke',
-@@ -101,6 +107,25 @@ export function apply(ctx) {
+@@ -101,6 +111,25 @@ export function apply(ctx) {
          response.end(inspect(error, { depth: 5 }))
        }
      } }))
@@ -270,7 +287,7 @@ index dec4f8fb..cd1b8fe2 100644
    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke-office-cli',
      async handler(_request, response) {
        try {
-@@ -165,6 +190,16 @@ export function apply(ctx) {
+@@ -165,6 +194,16 @@ export function apply(ctx) {
      if (!installation.ok || !installed.ok || await installed.text() !== 'installed plugin ready') {
        throw new Error(`desktop runtime: bundled pnpm plugin installation failed: ${installationResult}`)
      }
@@ -287,7 +304,7 @@ index dec4f8fb..cd1b8fe2 100644
      for (const { extension } of inputs) {
        const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
          headers: { cookie }, signal: AbortSignal.timeout(120_000),
-@@ -187,7 +222,7 @@ export function apply(ctx) {
+@@ -187,7 +226,7 @@ export function apply(ctx) {
      console.log('desktop runtime: DOCX, XLSX, PPTX to PDF and skill CLI discovery passed')
    } finally {
      clearTimeout(timer)
