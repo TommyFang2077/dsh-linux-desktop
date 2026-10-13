@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "baselineTag": "workbench-v0.2.1-alpha.1-r7",
+  "baselineCommit": "fd218dddff5225e0c0b6bb938a0570da4e718992",
+  "officialTag": "dsh-v0.2.1-alpha.1",
+  "officialCommit": "5badb15009ae1756c3afe0ae0cef1faafc290ccc",
+  "version": "0.2.1-alpha.1",
+  "linuxRevision": 9,
+  "dataEpoch": "dsh-0.2.1-alpha.1",
+  "sources": {
+    "updates/core.mjs": "aa006a81dcd520e7156051355b797bb40854453a2ab614e03fe2e1bf5ef0b42e",
+    "updates/desktop.mjs": "9a53f369981747c0f36a943cd26c2cd83d98c9ce6886d489b9b88cb0e60bff71",
+    "updates/user-install.mjs": "a2378d3c9667f7c73046cfa646c90c9c756a29632e2761a50f8559ef8707bdbf",
+    "updates/whole-desktop.mjs": "cbbe4e89caf796f5393d65bc359eb36bb7451afc1a4b97d0aec7473977a14d7e",
+    "updates/migration-worker.mjs": "e94faaf2e1b9f7402cc43e7187497770ca9098bd1ed4b8b2dc3a5ae6f103cbc0",
+    "scripts/build-updates.mjs": "447e91bb3d32c0789933202d2762ecd23191460e35269a949ea8ec6558a3d7ee",
+    "electron-builder.config.mjs": "7210315fe76fcc9441eea76a6469226fa2542a4d32148a73fd248891b1d6021f",
+    "patches/linux.patch": "60330a66c38cf520073cfe5888fa3ec8ae54f2e587d9916c1947f94cd66c9771",
+    "patches/bridge-migration.patch": "34f4e0db964a8e79dbf56aad9341e4ac713cf2891d05e77cfbff6cda8436d151",
+    "build/upstream/apps/desktop/src/main.ts": "4a300b11f11621a57ad71060108d0a5d34f447a4af871e5fe0c2349f322bde43"
+  }
+}

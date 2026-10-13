@@ -155,6 +155,8 @@ export async function installUserDesktop({ archive, sha256, version, linuxRevisi
   root = await userRoot(root, home)
   const entries = entryFiles(root, resolve(home), resolve(xdgDataHome))
   return locked(root, async () => {
+    const journal = join(root, '.activation.json')
+    if (await exists(journal)) fail('Interrupted desktop activation requires explicit whole-group recovery')
     await checkEntries(entries)
     const before = await exists(join(root, markerName)) ? await readState(root)
       : { schemaVersion: 1, kind: 'dsh-linux-desktop', current: null, previous: null }
@@ -177,6 +179,7 @@ export async function installUserDesktop({ archive, sha256, version, linuxRevisi
       if (!await prepareRestart()) return null
       const next = { ...before, current: sha256, previous: before.current === sha256 ? before.previous : before.current }
       try {
+        await atomicJson(journal, { schemaVersion: 1, phase: 'prepared', before, next })
         await activate(root, next)
         for (const [path, content, mode] of entries) {
           if (await exists(path)) continue
@@ -186,11 +189,19 @@ export async function installUserDesktop({ archive, sha256, version, linuxRevisi
           created.push(path)
         }
         const executable = join(destination, 'dsh-workbench')
+        await atomicJson(journal, { schemaVersion: 1, phase: 'activated', before, next })
         if (restart) await restart(executable)
+        await fs.rm(journal)
         return { root, version, executable }
       } catch (error) {
-        await activate(root, before)
-        for (const path of created) await fs.rm(path)
+        try {
+          await activate(root, before)
+          for (const path of created) await fs.rm(path)
+          await fs.rm(journal, { force: true })
+        } catch (rollbackError) {
+          error.activationUncertain = true
+          error.message += `; activation rollback incomplete: ${rollbackError.message}`
+        }
         throw error
       }
     } finally { await fs.rm(staging, { recursive: true, force: true }) }

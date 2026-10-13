@@ -7,6 +7,9 @@ import { promisify } from 'node:util'
 import { UpdateManager } from './core.mjs'
 import { ensureMarket } from './market.mjs'
 import { detectUserDesktop, installUserDesktop } from './user-install.mjs'
+import { markWholeDesktopHealthy } from './whole-desktop.mjs'
+
+export { assertWholeDesktopStartupAllowed } from './whole-desktop.mjs'
 
 const execute = promisify(execFile)
 
@@ -43,7 +46,7 @@ export async function createWorkbenchUpdates(options) {
   const url = pathToFileURL(join(resources, 'updates.html')).href
   const open = async () => {
     if (window && !window.isDestroyed()) { window.show(); window.focus(); return }
-    window = new BrowserWindow({ width: 660, height: 610, minWidth: 420, minHeight: 480, show: false,
+    window = new BrowserWindow({ width: 660, height: 810, minWidth: 420, minHeight: 480, show: false,
       title: '软件更新 · dsh-workbench', autoHideMenuBar: true,
       webPreferences: { preload: join(resources, 'preload.cjs'), contextIsolation: true,
         nodeIntegration: false, sandbox: true, webSecurity: true },
@@ -66,7 +69,16 @@ export async function createWorkbenchUpdates(options) {
       for (const channel of ['kernel', 'desktop']) {
         try { await manager.check(channel) } catch (error) { errors[channel] = error.message }
       }
-      return { ...manager.status(), errors }
+      if (config.desktopUpgrade) {
+        try { await manager.checkWholeDesktopUpgrade() } catch (error) { errors.desktopUpgrade = error.message }
+      }
+      const status = manager.status()
+      for (const channel of ['kernel', 'desktop']) if (status[channel].crossEpoch) delete errors[channel]
+      const upgrade = status.desktopUpgrade
+      if (upgrade?.available && !status.desktop.available) {
+        status.desktop = { ...status.desktop, latest: upgrade.latest, latestLinuxRevision: upgrade.latestLinuxRevision }
+      }
+      return { ...status, errors }
     } finally { performing = false }
   })
   ipcMain.handle('dsh-workbench:open-updates', async event => {
@@ -82,20 +94,28 @@ export async function createWorkbenchUpdates(options) {
       if (performing) throw new Error('已有更新操作或确认对话框正在进行')
       performing = true
       ownsOperation = true
-      if (!['kernel', 'desktop'].includes(channel)) throw new Error('未知更新通道')
-      if (action === 'check') return { status: await manager.check(channel) }
+      if (!['kernel', 'desktop', 'desktopUpgrade'].includes(channel)) throw new Error('未知更新通道')
+      if (action === 'check') return { status: channel === 'desktopUpgrade'
+        ? await manager.checkWholeDesktopUpgrade() : await manager.check(channel) }
       if (action !== 'install') throw new Error('未知更新操作')
       if (manager.busy) throw new Error('已有更新操作正在进行')
       const version = manager.status()[channel].available
       if (!version) throw new Error('请先检查更新')
       const answer = await dialog.showMessageBox(window, {
-        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : '桌面端'}至 ${version}${channel === 'desktop' ? `（Linux r${manager.status().desktop.availableLinuxRevision}）` : ''}？`,
-        detail: channel === 'kernel'
-          ? '下载并校验完整内核，在隔离目录试启动；确认停止当前任务后重启应用。不会安装桌面软件包。'
-          : '下载并校验完整桌面归档，确认停止任务后切换 HOME 内的用户版本并重启。不需要 sudo，不替换兼容的新内核。',
+        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${manager.status()[channel].availableLinuxRevision}` : ''}？`,
+        detail: channel === 'desktopUpgrade'
+          ? '这次更新会改变数据格式。请先关闭正在使用 dsh 的命令行。应用会停止当前任务并退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开。'
+          : '应用会停止当前任务并重启。',
         buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
       })
       if (answer.response !== 1) return { status: manager.status() }
+      if (channel === 'desktopUpgrade') {
+        await manager.installWholeDesktopUpgrade({
+          ...options.wholeDesktop, root: userDesktop?.root ?? join(options.wholeDesktop.home, 'Applications/dsh-linux-desktop'),
+        }, { prepareRestart: options.prepareRestart, recover: options.recover,
+          quitWithoutRelaunch: options.quitWithoutRelaunch })
+        return { status: manager.status() }
+      }
       try {
         let installed
         if (channel === 'kernel') installed = await manager.installKernel(options.prepareRestart, options.restart)
@@ -114,7 +134,12 @@ export async function createWorkbenchUpdates(options) {
   })
   return {
     get selected() { return manager.selected },
-    markHealthy: () => manager.markHealthy(), rollback: () => manager.rollback(),
+    markHealthy: async () => {
+      await manager.markHealthy()
+      await markWholeDesktopHealthy({ home: options.wholeDesktop.home, version: app.getVersion(),
+        executable: process.execPath, pid: process.pid })
+    },
+    rollback: () => manager.rollback(),
     ensureDefaults: async home => {
       try {
         await ensureMarket({ data: app.getPath('userData'), home, node: process.execPath,

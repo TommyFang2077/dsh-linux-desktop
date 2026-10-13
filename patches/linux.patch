@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/scripts/desktop-build-paths.d.mts b/apps/desktop/scripts/desktop-build-paths.d.mts
-index 9a8e408..27f8a73 100644
+index 9a8e408e..27f8a735 100644
 --- a/apps/desktop/scripts/desktop-build-paths.d.mts
 +++ b/apps/desktop/scripts/desktop-build-paths.d.mts
 @@ -1,5 +1,8 @@
@@ -40,7 +40,7 @@ index 9a8e408..27f8a73 100644
  }
  
 diff --git a/apps/desktop/scripts/desktop-build-paths.mjs b/apps/desktop/scripts/desktop-build-paths.mjs
-index 4f33e80..d44bf0f 100644
+index 4f33e804..d44bf0f3 100644
 --- a/apps/desktop/scripts/desktop-build-paths.mjs
 +++ b/apps/desktop/scripts/desktop-build-paths.mjs
 @@ -4,14 +4,14 @@ import { join, resolve } from 'node:path'
@@ -96,7 +96,7 @@ index 4f33e80..d44bf0f 100644
    }
  }
 diff --git a/apps/desktop/scripts/development-project.ts b/apps/desktop/scripts/development-project.ts
-index d544ce6..9a6b2a5 100644
+index d544ce6d..9a6b2a53 100644
 --- a/apps/desktop/scripts/development-project.ts
 +++ b/apps/desktop/scripts/development-project.ts
 @@ -16,8 +16,7 @@ import { dirname, join } from 'node:path'
@@ -119,7 +119,7 @@ index d544ce6..9a6b2a5 100644
  
  function readManifest(path: string): PackageManifest {
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index 1fb7878..f7a076a 100644
+index 1fb78780..f7a076a1 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
 @@ -51,7 +51,8 @@ export function createElectronBuilderConfig(
@@ -143,7 +143,7 @@ index 1fb7878..f7a076a 100644
    // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
    // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
 diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
-index 442e017..6cb7cfc 100644
+index 442e0175..6cb7cfc8 100644
 --- a/apps/desktop/scripts/prepare-dsh.ts
 +++ b/apps/desktop/scripts/prepare-dsh.ts
 @@ -41,7 +41,7 @@ const STORE_ROOT = join(BUILD_ROOT, 'store')
@@ -156,7 +156,7 @@ index 442e017..6cb7cfc 100644
  
  function manifestVersion(path: string, subject: string): string {
 diff --git a/apps/desktop/scripts/prepare-runtime.ts b/apps/desktop/scripts/prepare-runtime.ts
-index 1b88f09..725a552 100644
+index 1b88f091..725a552f 100644
 --- a/apps/desktop/scripts/prepare-runtime.ts
 +++ b/apps/desktop/scripts/prepare-runtime.ts
 @@ -31,15 +31,17 @@ function preparePnpm(): string {
@@ -195,7 +195,7 @@ index 1b88f09..725a552 100644
    cpSync(join(import.meta.dirname, '..', 'lib', 'command-manager-entry.js'), join(RUNTIME_ROOT, 'cli', 'command-manager.js'))
    cpSync(join(import.meta.dirname, 'command-path.ps1'), join(RUNTIME_ROOT, 'cli', 'command-path.ps1'))
 diff --git a/apps/desktop/scripts/smoke-prepared-runtime.ts b/apps/desktop/scripts/smoke-prepared-runtime.ts
-index 697f527..dac5f29 100644
+index 697f5270..dac5f294 100644
 --- a/apps/desktop/scripts/smoke-prepared-runtime.ts
 +++ b/apps/desktop/scripts/smoke-prepared-runtime.ts
 @@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
@@ -216,7 +216,7 @@ index 697f527..dac5f29 100644
    const environment = { ...scrubWindowsSigningEnvironment(process.env), NODE_OPTIONS: '',
      NARB_NATIVE_CACHE_DIR: cache, NARB_DISABLE_NATIVE_CACHE: '0' }
 diff --git a/apps/desktop/scripts/smoke-runtime.ts b/apps/desktop/scripts/smoke-runtime.ts
-index f15f10a..11d3d28 100644
+index f15f10a9..11d3d28f 100644
 --- a/apps/desktop/scripts/smoke-runtime.ts
 +++ b/apps/desktop/scripts/smoke-runtime.ts
 @@ -1,5 +1,6 @@
@@ -303,7 +303,7 @@ index f15f10a..11d3d28 100644
    }
  }
 diff --git a/apps/desktop/src/host-process.ts b/apps/desktop/src/host-process.ts
-index 948a88e..eb86da7 100644
+index 948a88e6..eb86da70 100644
 --- a/apps/desktop/src/host-process.ts
 +++ b/apps/desktop/src/host-process.ts
 @@ -155,7 +155,7 @@ export class DesktopHostProcess {
@@ -316,7 +316,7 @@ index 948a88e..eb86da7 100644
     * @param projectDir - Desktop plugin profile and child working directory.
     * @param inspectPort - Optional loopback inspector port for workspace development.
 diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
-index fc19021..32f9c84 100644
+index fc19021f..32f9c847 100644
 --- a/apps/desktop/src/ipc.ts
 +++ b/apps/desktop/src/ipc.ts
 @@ -27,6 +27,8 @@ export const DESKTOP_IPC = {
@@ -343,7 +343,7 @@ index fc19021..32f9c84 100644
  
  /** Scheme of Desktop-owned application documents. */
 diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
-index 5d9d460..bec0ff5 100644
+index 5d9d4607..bec0ff5e 100644
 --- a/apps/desktop/src/locale.ts
 +++ b/apps/desktop/src/locale.ts
 @@ -31,17 +31,17 @@ export const en = {
@@ -459,7 +459,7 @@ index 5d9d460..bec0ff5 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index b4b8153..42a045c 100644
+index b4b8153b..f1abe7b0 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -508,7 +508,7 @@ index b4b8153..42a045c 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -148,9 +151,47 @@ interface RuntimeResources {
+@@ -148,9 +151,51 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -529,6 +529,7 @@ index b4b8153..42a045c 100644
 +
 +/** Packaged downstream updater, emitted separately from the upstream main bundle. */
 +interface WorkbenchUpdateModule {
++  assertWholeDesktopStartupAllowed(paths: { home: string; dshHome: string; userData: string }): Promise<void>
 +  createWorkbenchUpdates(options: {
 +    app: typeof app
 +    bundled: { dsh: string; runtime: string }
@@ -537,6 +538,9 @@ index b4b8153..42a045c 100644
 +    prepareRestart: () => Promise<boolean>
 +    restart: (execPath?: string) => void
 +    finishRestart: () => void
++    quitWithoutRelaunch: () => void
++    wholeDesktop: { home: string; dshHome: string; userData: string; xdgDataHome: string;
++      oldExecutable: string; node: string; workerPath: string }
 +    recover: () => Promise<void>
 +    trustedSender: (event: IpcMainInvokeEvent) => boolean
 +  }): Promise<WorkbenchUpdates>
@@ -558,7 +562,7 @@ index b4b8153..42a045c 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -160,6 +201,62 @@ function runtimeResources(): RuntimeResources {
+@@ -160,6 +205,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
@@ -621,7 +625,25 @@ index b4b8153..42a045c 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -316,12 +413,33 @@ async function main(): Promise<void> {
+@@ -313,15 +414,54 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+ }
+ 
+ async function main(): Promise<void> {
++  const paths = resolveDesktopPaths()
++  const wholeDesktopPaths = { home: app.getPath('home'), dshHome: dirname(dirname(paths.profile)), userData: app.getPath('userData') }
++  const workbenchModule = process.platform === 'linux' && app.isPackaged
++    ? await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule : undefined
++  if (workbenchModule !== undefined) {
++    try { await workbenchModule.assertWholeDesktopStartupAllowed(wholeDesktopPaths) }
++    catch (error) {
++      const message = error instanceof Error ? error.message : String(error)
++      console.error(message)
++      try { dialog.showErrorBox(app.getName(), message) }
++      catch (dialogError) { console.error(dialogError) }
++      app.exit(1)
++      return
++    }
++  }
    void pruneCrashReports(app.getPath('logs'))
    const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
    const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -632,10 +654,9 @@ index b4b8153..42a045c 100644
 -    ? developmentPrimaryRuntime()
 -    : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +  let workbench: WorkbenchUpdates | undefined
-+  if (process.platform === 'linux' && app.isPackaged) {
++  if (workbenchModule !== undefined) {
 +    // This independently emitted ESM module is a downstream packaging interface, not an upstream workspace import.
-+    const module = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
-+    workbench = await module.createWorkbenchUpdates({
++    workbench = await workbenchModule.createWorkbenchUpdates({
 +      app,
 +      bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
 +      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
@@ -643,6 +664,11 @@ index b4b8153..42a045c 100644
 +      prepareRestart: () => prepareWorkbenchRestart(),
 +      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
 +      finishRestart: () => { quitWithoutConfirmation() },
++      quitWithoutRelaunch: () => { quitWithoutConfirmation() },
++      wholeDesktop: { ...wholeDesktopPaths, xdgDataHome: process.env.XDG_DATA_HOME ?? join(wholeDesktopPaths.home, '.local/share'),
++        oldExecutable: process.execPath,
++        node: await resolveDesktopHostNode(join(process.resourcesPath, 'runtime', 'primary-runtime'), process.execPath),
++        workerPath: fileURLToPath(new URL('./workbench-migration-worker.mjs', import.meta.url)) },
 +      recover: () => recoverWorkbenchBackend(),
 +      trustedSender: (event) => {
 +        try { assertProductSender(event); return true }
@@ -652,7 +678,6 @@ index b4b8153..42a045c 100644
 +    selectedKernel = workbench.selected
 +  }
 +  const resources = await runtimeResources()
-+  const paths = resolveDesktopPaths()
 +  let primaryRuntime = selectedKernel === undefined
 +    ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +    : join(selectedKernel.runtime, 'primary-runtime')
@@ -660,7 +685,7 @@ index b4b8153..42a045c 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -442,7 +560,11 @@ async function main(): Promise<void> {
+@@ -442,7 +582,11 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -673,7 +698,7 @@ index b4b8153..42a045c 100644
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -508,8 +630,9 @@ async function main(): Promise<void> {
+@@ -508,8 +652,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -685,7 +710,7 @@ index b4b8153..42a045c 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -564,77 +687,120 @@ async function main(): Promise<void> {
+@@ -564,77 +709,120 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -863,7 +888,7 @@ index b4b8153..42a045c 100644
    )
  
    const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -925,7 +1091,7 @@ async function main(): Promise<void> {
+@@ -925,7 +1113,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -872,7 +897,7 @@ index b4b8153..42a045c 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -952,7 +1118,10 @@ async function main(): Promise<void> {
+@@ -952,7 +1140,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -884,7 +909,7 @@ index b4b8153..42a045c 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -974,19 +1143,22 @@ async function main(): Promise<void> {
+@@ -974,19 +1165,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -911,7 +936,7 @@ index b4b8153..42a045c 100644
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1225,7 +1397,9 @@ async function main(): Promise<void> {
+@@ -1225,7 +1419,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -922,7 +947,7 @@ index b4b8153..42a045c 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1240,6 +1414,7 @@ async function main(): Promise<void> {
+@@ -1240,6 +1436,7 @@ async function main(): Promise<void> {
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -930,7 +955,7 @@ index b4b8153..42a045c 100644
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1275,6 +1450,7 @@ async function main(): Promise<void> {
+@@ -1275,6 +1472,7 @@ async function main(): Promise<void> {
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }
@@ -939,7 +964,7 @@ index b4b8153..42a045c 100644
        if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
      }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
 diff --git a/apps/desktop/src/node-environment.ts b/apps/desktop/src/node-environment.ts
-index 680b439..0d9732f 100644
+index 680b4395..0d9732ff 100644
 --- a/apps/desktop/src/node-environment.ts
 +++ b/apps/desktop/src/node-environment.ts
 @@ -1,10 +1,28 @@
@@ -976,7 +1001,7 @@ index 680b439..0d9732f 100644
   * @param environment - Caller environment preserved for plugin execution.
   * @returns Environment for a Node-mode child process.
 diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
-index f590b8b..3d61823 100644
+index f590b8bc..3d61823e 100644
 --- a/apps/desktop/src/preload-app.ts
 +++ b/apps/desktop/src/preload-app.ts
 @@ -55,6 +55,10 @@ function createProductApi(): DshDesktopProductApi {
@@ -991,7 +1016,7 @@ index f590b8b..3d61823 100644
  }
  
 diff --git a/apps/desktop/src/tray.ts b/apps/desktop/src/tray.ts
-index b2ce416..d06e5b9 100644
+index b2ce416b..d06e5b91 100644
 --- a/apps/desktop/src/tray.ts
 +++ b/apps/desktop/src/tray.ts
 @@ -1,15 +1,17 @@
@@ -1032,7 +1057,7 @@ index b2ce416..d06e5b9 100644
      ]))
    }
 diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
-index d0d7bb9..41faa39 100644
+index d0d7bb94..41faa39d 100644
 --- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 +++ b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 @@ -1,4 +1,4 @@
@@ -1093,7 +1118,7 @@ index d0d7bb9..41faa39 100644
  
  /** Exercise Domino parsing through the HTML converter and GFM plugin used by web_fetch. */
 diff --git a/apps/desktop/tests/node-environment.spec.ts b/apps/desktop/tests/node-environment.spec.ts
-index 5050e4f..d9ed00e 100644
+index 5050e4fb..d9ed00e0 100644
 --- a/apps/desktop/tests/node-environment.spec.ts
 +++ b/apps/desktop/tests/node-environment.spec.ts
 @@ -1,6 +1,28 @@
@@ -1128,7 +1153,7 @@ index 5050e4f..d9ed00e 100644
  it('keeps private Desktop launchers out of the Host environment inherited by PTC', () => {
    const environment = { PATH: '/user/bin', HOME: '/user' }
 diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
-index 11c3a48..32d4c3a 100644
+index 11c3a488..32d4c3a1 100644
 --- a/apps/desktop/tests/tray.spec.ts
 +++ b/apps/desktop/tests/tray.spec.ts
 @@ -27,35 +27,38 @@ vi.mock('electron', () => ({
@@ -1190,7 +1215,7 @@ index 11c3a48..32d4c3a 100644
    f.tray.dispose()
    expect(f.native.destroy).toHaveBeenCalledOnce()
 diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
-index 9848c7f..f0ac5c5 100644
+index 9848c7fb..f0ac5c53 100644
 --- a/apps/desktop/tests/welcome-startup.spec.ts
 +++ b/apps/desktop/tests/welcome-startup.spec.ts
 @@ -106,6 +106,10 @@ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
@@ -1214,7 +1239,7 @@ index 9848c7f..f0ac5c5 100644
    const welcomeCount = state.beforeWelcome.mock.calls.length
    state.hasApiKey = true
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
-index 66f159a..a601e6f 100644
+index 66f159a3..a601e6f3 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
 +++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
 @@ -5,3 +5,7 @@
@@ -1226,7 +1251,7 @@ index 66f159a..a601e6f 100644
 +  margin-inline-start: 8px;
 +}
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
-index e3c8cb7..943cd14 100644
+index e3c8cb70..943cd148 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 +++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 @@ -1,14 +1,70 @@
@@ -1308,7 +1333,7 @@ index e3c8cb7..943cd14 100644
 +  </div>
  }
 diff --git a/packages/client/ui-settings-general/src/client/index.ts b/packages/client/ui-settings-general/src/client/index.ts
-index a17ea2c..c285399 100644
+index a17ea2c5..c2853995 100644
 --- a/packages/client/ui-settings-general/src/client/index.ts
 +++ b/packages/client/ui-settings-general/src/client/index.ts
 @@ -33,6 +33,7 @@ import { DesktopUpdateSource } from './desktop-update-source.ts'
@@ -1346,7 +1371,7 @@ index a17ea2c..c285399 100644
    ctx.slots.inject('sidebar.toggle.badge', () => ctx.slots.register({
      name: 'sidebar.toggle.badge', locale: NS,
 diff --git a/packages/client/ui-settings-general/src/client/locales.ts b/packages/client/ui-settings-general/src/client/locales.ts
-index 8d0f253..ceb078b 100644
+index 8d0f2530..ceb078b6 100644
 --- a/packages/client/ui-settings-general/src/client/locales.ts
 +++ b/packages/client/ui-settings-general/src/client/locales.ts
 @@ -28,6 +28,14 @@ export const zh = {
@@ -1380,7 +1405,7 @@ index 8d0f253..ceb078b 100644
    'developerTools.error': 'Could not save. Please try again.',
    'developerTools.description': 'Shows trajectory, code diffs, and all Agent presets',
 diff --git a/packages/client/ui-settings-general/tests/components.client.spec.tsx b/packages/client/ui-settings-general/tests/components.client.spec.tsx
-index ac2e7f0..915b07e 100644
+index ac2e7f00..915b07ec 100644
 --- a/packages/client/ui-settings-general/tests/components.client.spec.tsx
 +++ b/packages/client/ui-settings-general/tests/components.client.spec.tsx
 @@ -240,6 +240,40 @@ describe('current version', () => {
