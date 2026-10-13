@@ -621,11 +621,11 @@ if (!isolated) {
     console.log(result.stdout.trim())
   })
 
-  publicTest('host unreadable writer inspection fails closed without changing the fixture program or source data', async t => {
+  publicTest('host writer inspection skips uninspectable session processes or fails closed without changing data', async t => {
     const f = await fixture(t)
     const { result } = await handoff(f)
     const status = await completed(result.reportPath)
-    if (status.phase === 'healthy') { t.skip('This host has no inaccessible or shared writer; strict scanner succeeded'); return }
+    if (status.phase === 'healthy') { t.skip('This host has no shared writer; the scanner skipped uninspectable non-dsh processes'); return }
     assert.equal(status.phase, 'failed')
     assert.match(status.error, /Shared writer inspection|Shared DSH process|Data writer/)
     assert.equal(status.activated, false)

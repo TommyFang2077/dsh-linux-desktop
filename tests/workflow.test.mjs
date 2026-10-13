@@ -68,7 +68,7 @@ test('CI preflight refuses relabelled alpha.2 source as an alpha.1 bridge', asyn
   await cp(new URL('../scripts/build-bridge.mjs', import.meta.url), join(directory, 'scripts/build-bridge.mjs'))
   const upstream = { ...JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')),
     version: '0.2.1-alpha.2', commit: 'd743267388641bc76f17c45ce8b4c231aed1d32c' }
-  const legacy = { ...desktop, version: '0.2.1-alpha.1', dataEpoch: 'dsh-0.2.1-alpha.1', linuxRevision: 8 }
+  const legacy = { ...desktop, version: '0.2.1-alpha.1', dataEpoch: 'dsh-0.2.1-alpha.1', linuxRevision: 9 }
   const sources = structuredClone(config)
   for (const channel of ['kernel', 'desktop']) sources[channel].url = `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}-latest.json`
   await writeFile(join(directory, 'desktop.json'), JSON.stringify(legacy))

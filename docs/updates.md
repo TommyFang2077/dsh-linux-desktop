@@ -16,7 +16,7 @@
 
 alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部子代理目录写为 `subagent/catalog` version 2。虽然上游 Session 版本仍为 4，alpha.1 读取器会拒绝这些新记录，因此本发行使用新的 `dataEpoch: dsh-0.2.1-alpha.2`，不宣称双向数据兼容。
 
-旧 r7 的桌面与内核 OTA 会按既有规则阻止直接跨 epoch 更新，并非清单缺失或下载故障。本轮源码增加 `alpha.1 r7 → 真实 alpha.1 r8 过渡包 → alpha.2 r2 整包升级`：旧格式签名清单先提供同 epoch 过渡包，再由过渡包的新入口完成退出、自动备份和迁移。源码与本地验收不等于线上已经发布；生产更新源与真实安装切换均另行确认。过渡发布前，手动完整归档安装仍须先完全退出并备份实际 DSH 数据根和 Electron userData。只更新 deb/rpm 引导包不会替换已有 HOME 版本。
+旧 r7 的桌面与内核 OTA 会按既有规则阻止直接跨 epoch 更新，并非清单缺失或下载故障。本轮源码增加 `alpha.1 → alpha.1 r9 过渡包 → alpha.2 r3 整包升级`：旧格式签名清单先提供同 epoch 过渡包，再由过渡包的新入口完成退出、自动备份和迁移。源码与本地验收不等于线上已经发布；生产更新源与真实安装切换均另行确认。过渡发布前，手动完整归档安装仍须先完全退出并备份实际 DSH 数据根和 Electron userData。只更新 deb/rpm 引导包不会替换已有 HOME 版本。
 
 新版保留已提交的旧内核指针与文件，但不会选用不兼容的 alpha.1 内核。尚未提交的独立内核试启动仍遵循原有 staged → booting → healthy 生命周期，启动中断时恢复 previous 指针；这不是冻结 pending 状态，也不恢复会话数据。其 pnpm 入口改在 `runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`。
 
@@ -44,7 +44,7 @@ alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部�
 
 ## 发布源与信任
 
-`updates.json` 固定普通内核、普通桌面与独立整包升级的清单地址和 Ed25519 公钥，清单托管在本仓库 `update-feed` 分支，资产来自版本化 GitHub Releases。旧根清单服务 alpha.1 r8，alpha.2 使用 epoch 专属文件；已发布 alpha.2 r1 的显式配置切换见 [双更新源](desktop-migration.md#双更新源)。来源可通过 `DSH_WORKBENCH_UPDATE_CONFIG=/绝对路径/updates.json` 在下次完全退出并启动时覆盖；更换公钥即改变信任来源，既有客户端不自动接受服务器返回的新密钥。
+`updates.json` 固定普通内核、普通桌面与独立整包升级的清单地址和 Ed25519 公钥，清单托管在本仓库 `update-feed` 分支，资产来自版本化 GitHub Releases。旧根清单服务 alpha.1 过渡包，alpha.2 使用 epoch 专属文件；已发布 alpha.2 r1 的显式配置切换见 [双更新源](desktop-migration.md#双更新源)。来源可通过 `DSH_WORKBENCH_UPDATE_CONFIG=/绝对路径/updates.json` 在下次完全退出并启动时覆盖；更换公钥即改变信任来源，既有客户端不自动接受服务器返回的新密钥。
 
 未首次公开发行前 URL 可能为 404，本地配置完整不代表更新服务已上线。私有部署可将通道设为 `null`，窗口会禁用该通道。发布清单与资产必须使用无凭据、无 fragment 的 HTTPS；只有 GitHub Release 同仓库/同文件名到 Release 下载 CDN 的有限跳转可接受，其他重定向仍拒绝。下载和抽取有大小、数量、路径、文件类型、权限与时间限制。
 
@@ -65,9 +65,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.2-r3-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.2-r3-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.2-r3-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/

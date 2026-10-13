@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { bridgePlan, releaseFeedNames, stageBridge } from '../scripts/build-bridge.mjs'
+import { BRIDGE_REVISION, bridgePlan, releaseFeedNames, stageBridge } from '../scripts/build-bridge.mjs'
 import { installUserDesktop } from '../build/user-install.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -63,7 +63,7 @@ async function legacyFixture(t) {
     return { path, bytes, metadata, sha256: digest(bytes) }
   }
   const old = await archive(7)
-  const bridge = await archive(8)
+  const bridge = await archive(BRIDGE_REVISION)
   const installed = await installUserDesktop({ archive: old.path, sha256: old.sha256, version: old.metadata.version,
     linuxRevision: 7, root: installation, home, xdgDataHome: join(home, '.local/share') })
   const keys = generateKeyPairSync('ed25519')
@@ -95,7 +95,7 @@ test('bridge plan preserves fixed official alpha.1 source and independent r8 ide
   assert.equal(plan.upstream.version, '0.2.1-alpha.1')
   assert.equal(plan.upstream.pnpm, '11.7.0')
   assert.equal(plan.desktop.version, '0.2.1-alpha.1')
-  assert.equal(plan.desktop.linuxRevision, 8)
+  assert.equal(plan.desktop.linuxRevision, BRIDGE_REVISION)
   assert.equal(plan.desktop.dataEpoch, 'dsh-0.2.1-alpha.1')
   for (const channel of ['kernel', 'desktop']) {
     assert.equal(plan.config[channel].url, `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}-latest.json`)
@@ -115,8 +115,8 @@ test('bridge owns legacy feeds while new epochs leave them untouched', () => {
   assert.deepEqual(releaseFeedNames({ version: '0.2.1-alpha.2', linuxRevision: 2, dataEpoch: 'dsh-0.2.1-alpha.2' }), {
     kernel: 'kernel-dsh-0.2.1-alpha.2-latest.json', desktop: 'desktop-dsh-0.2.1-alpha.2-latest.json',
   })
-  assert.throws(() => releaseFeedNames({ version: '0.2.1-alpha.2', linuxRevision: 8, dataEpoch: 'dsh-0.2.1-alpha.1' }), /alpha.1 r8/)
-  assert.throws(() => releaseFeedNames({ version: '0.2.1-alpha.1', linuxRevision: 7, dataEpoch: 'dsh-0.2.1-alpha.1' }), /alpha.1 r8/)
+  assert.throws(() => releaseFeedNames({ version: '0.2.1-alpha.2', linuxRevision: BRIDGE_REVISION, dataEpoch: 'dsh-0.2.1-alpha.1' }), /alpha.1 r9/)
+  assert.throws(() => releaseFeedNames({ version: '0.2.1-alpha.1', linuxRevision: 8, dataEpoch: 'dsh-0.2.1-alpha.1' }), /alpha.1 r9/)
   assert.throws(() => releaseFeedNames({ version: '0.2.1-alpha.2', linuxRevision: 2, dataEpoch: '../legacy' }), /epoch/)
 })
 
@@ -127,7 +127,7 @@ test('isolated bridge staging applies historical Linux patch before the minimal 
   const result = await stageBridge({ root, directory, sourceRepository: join(root, 'build/upstream-alpha.1-backup') })
   const read = file => JSON.parse(readFileSync(join(directory, file), 'utf8'))
   assert.equal(read('upstream.json').commit, '5badb15009ae1756c3afe0ae0cef1faafc290ccc')
-  assert.equal(read('desktop.json').linuxRevision, 8)
+  assert.equal(read('desktop.json').linuxRevision, BRIDGE_REVISION)
   assert.equal(read('build/upstream/package.json').version, '0.2.1-alpha.1')
   assert.equal(read('updates.json').desktopUpgrade.url, result.config.desktopUpgrade.url)
   assert.deepEqual(readFileSync(join(directory, 'scripts/build.py')), execFileSync('git', ['show', `${baseline}:scripts/build.py`], { cwd: root }))
@@ -145,7 +145,7 @@ test('isolated bridge staging applies historical Linux patch before the minimal 
 test('real r7 check and install consume the signed same-epoch r8 bridge in an isolated HOME', async t => {
   const f = await legacyFixture(t)
   await f.manager.check('desktop')
-  assert.equal(f.manager.status().desktop.availableLinuxRevision, 8)
+  assert.equal(f.manager.status().desktop.availableLinuxRevision, BRIDGE_REVISION)
   let restarted, prepared = 0
   const result = await f.manager.installDesktop(async () => { prepared++; return true }, artifact => installUserDesktop({ ...artifact,
     root: f.installation, home: f.home, xdgDataHome: join(f.home, '.local/share') }), executable => { restarted = executable })
@@ -155,7 +155,7 @@ test('real r7 check and install consume the signed same-epoch r8 bridge in an is
   const actual = JSON.parse(await fs.readFile(join(f.installation, 'current/resources/app/workbench/desktop.json'), 'utf8'))
   assert.equal(actual.version, '0.2.1-alpha.1')
   assert.equal(actual.dataEpoch, 'dsh-0.2.1-alpha.1')
-  assert.equal(actual.linuxRevision, 8)
+  assert.equal(actual.linuxRevision, BRIDGE_REVISION)
 })
 
 test('real r7 preserves signature, schema and epoch checks before staging any bridge', async t => {
@@ -166,7 +166,7 @@ test('real r7 preserves signature, schema and epoch checks before staging any br
     assert.equal(f.manager.status().desktop.available, null)
   }
   const tampered = f.signed(f.release)
-  tampered.payload = Buffer.from(JSON.stringify({ ...f.release, linuxRevision: 9 })).toString('base64')
+  tampered.payload = Buffer.from(JSON.stringify({ ...f.release, linuxRevision: BRIDGE_REVISION + 1 })).toString('base64')
   f.responses.set(f.plan.config.desktop.url, Buffer.from(JSON.stringify(tampered)))
   await assert.rejects(f.manager.check('desktop'), /签名/)
   f.responses.set(f.plan.config.desktop.url, Buffer.from(JSON.stringify(f.signed(f.release))))

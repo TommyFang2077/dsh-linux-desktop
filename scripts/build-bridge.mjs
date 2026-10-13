@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 export const BRIDGE_BASELINE = 'workbench-v0.2.1-alpha.1-r7'
+export const BRIDGE_REVISION = 9
 const BASELINE_COMMIT = 'fd218dddff5225e0c0b6bb938a0570da4e718992'
 const OFFICIAL_COMMIT = '5badb15009ae1756c3afe0ae0cef1faafc290ccc'
 const FEED_ROOT = 'https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/'
@@ -17,7 +18,7 @@ export function releaseFeedNames({ version, linuxRevision, dataEpoch }) {
   assert.match(dataEpoch, /^dsh-[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/, 'Invalid release data epoch')
   assert.ok(Number.isSafeInteger(linuxRevision) && linuxRevision > 0, 'Invalid Linux revision')
   if (dataEpoch === 'dsh-0.2.1-alpha.1') {
-    assert.ok(version === '0.2.1-alpha.1' && linuxRevision === 8, 'Only genuine alpha.1 r8 may replace legacy feeds')
+    assert.ok(version === '0.2.1-alpha.1' && linuxRevision === BRIDGE_REVISION, `Only genuine alpha.1 r${BRIDGE_REVISION} may replace legacy feeds`)
     return { kernel: 'kernel-latest.json', desktop: 'desktop-latest.json' }
   }
   assert.equal(dataEpoch, `dsh-${version}`, 'Release version differs from its data epoch')
@@ -33,7 +34,7 @@ export function bridgePlan(root = resolve(import.meta.dirname, '..')) {
   assert.equal(upstream.repository, 'https://github.com/deepseek-ai/deepseek-harness.git')
   assert.equal(upstream.commit, OFFICIAL_COMMIT)
   assert.equal(upstream.version, '0.2.1-alpha.1')
-  const desktop = { ...fromTag('desktop.json'), linuxRevision: 8 }
+  const desktop = { ...fromTag('desktop.json'), linuxRevision: BRIDGE_REVISION }
   assert.equal(desktop.version, upstream.version)
   assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.1')
   const config = fromTag('updates.json')

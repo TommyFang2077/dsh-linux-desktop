@@ -29,7 +29,7 @@ sudo dnf install ./dsh-workbench-0.2.1-alpha.2-r1-linux-x64.rpm
 
 打开 **设置 → 通用 → 软件更新**，检查并更新桌面或内核。两者独立更新，下载后会校验签名和兼容性。
 
-**alpha.1 → alpha.2 是跨数据兼容边界升级**：普通 OTA 保留兼容检查。本轮源码支持先更新为真实 `alpha.1 r8` 过渡包，再由独立整包入口升级到 `alpha.2 r2`，旧应用完全退出、自动数据备份验证成功后才切换。生产更新源和真实安装尚待另行发布、确认；过渡包发布前，仍按下方手动归档流程升级，先备份实际 DSH 数据根和 Electron userData。仅更新 deb/rpm 引导包不会替换已有 HOME 版本；回退到 alpha.1 必须同时恢复旧格式数据。支持范围与恢复说明见 [过渡升级与恢复](docs/desktop-migration.md)。
+**alpha.1 → alpha.2 是跨数据兼容边界升级**：在「软件更新」里点「检查更新」再点「更新」即可。alpha.1 用户会先更新到 `alpha.1 r9` 过渡包，再次更新时升级到 `alpha.2 r3`；旧应用完全退出、自动数据备份验证成功后才切换。仅更新 deb/rpm 引导包不会替换已有 HOME 版本；回退到 alpha.1 必须同时恢复旧格式数据。支持范围与恢复说明见 [过渡升级与恢复](docs/desktop-migration.md)。
 
 托盘菜单提供「打开」「重启」「退出」。重启或退出前，如果有正在执行的任务，应用会请求确认。
 
@@ -54,11 +54,11 @@ sudo dnf install ./dsh-workbench-0.2.1-alpha.2-r1-linux-x64.rpm
 
 仅使用本仓库可信发行版或自己构建的归档。先核对下载来源和校验值，再执行其中的程序；未知来源的归档不能靠自己附带的校验值证明可信。
 
-以下示例使用本轮源码构建的 r2 归档，在仓库根目录运行；这不表示 Releases 已发布 r2。归档位于 `dist/`：
+以下示例使用 r3 归档，在仓库根目录运行，归档位于 `dist/`：
 
 ```sh
 (cd dist && sha256sum --check SHA256SUMS)
-archive="$PWD/dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.tar.gz"
+archive="$PWD/dist/dsh-workbench-0.2.1-alpha.2-r3-linux-x64.tar.gz"
 checksum=$(sha256sum "$archive" | cut -d ' ' -f 1)
 temporary=$(mktemp -d)
 tar -xzf "$archive" -C "$temporary"

@@ -99,32 +99,35 @@ test('a real active migration startup guard exits without reading data or enteri
   }
 })
 
-test('the shipped renderer exposes explicit whole desktop check and install actions', async () => {
+test('the shipped renderer checks every channel and installs a cross-epoch release with one button', async () => {
   const html = readFileSync(new URL('../updates/updates.html', import.meta.url), 'utf8')
   const source = readFileSync(new URL('../updates/updates.js', import.meta.url), 'utf8')
   const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], { textContent: '' }]))
-  const buttons = [...html.matchAll(/<button data-action="([^"]+)" data-channel="([^"]+)"/g)].map(match => ({
-    dataset: { action: match[1], channel: match[2] }, disabled: false,
+  const buttons = [...html.matchAll(/<button data-action="([^"]+)"/g)].map(match => ({
+    dataset: { action: match[1] }, disabled: false,
     addEventListener(_event, listener) { this.click = listener },
   }))
-  const state = { version: '1.0.0', linuxRevision: 7, available: '2.0.0', availableLinuxRevision: 2,
-    latest: '2.0.0', latestLinuxRevision: 2, configured: true }
-  const status = { kernel: state, desktop: state, desktopUpgrade: state, busy: false, notice: '' }
+  assert.deepEqual(buttons.map(button => button.dataset.action), ['check', 'install'])
+  const current = { version: '1.0.0', linuxRevision: 7, available: null, configured: true }
+  const status = { kernel: { ...current, crossEpoch: true }, desktop: { ...current, crossEpoch: true },
+    desktopUpgrade: { ...current, available: '2.0.0', availableLinuxRevision: 2 }, busy: false, notice: '' }
   const calls = []
   runInNewContext(source, { document: {
     getElementById: id => { assert.ok(nodes.has(id), `shipped HTML contains ${id}`); return nodes.get(id) },
-    querySelectorAll: selector => selector === 'button' ? buttons
-      : buttons.filter(button => selector === `[data-channel="${button.dataset.channel}"]`),
-  }, window: { workbenchUpdates: { invoke: async (action, channel) => { calls.push([action, channel]); return { status } } } },
-  setInterval: () => {} })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.ok(calls.some(([action, channel]) => action === 'check' && channel === 'desktopUpgrade'))
-  const install = buttons.find(button => button.dataset.action === 'install' && button.dataset.channel === 'desktopUpgrade')
-  assert.ok(install)
+    querySelectorAll: selector => { assert.equal(selector, 'button'); return buttons },
+  }, window: { workbenchUpdates: { invoke: async (action, channel) => {
+    calls.push([action, channel])
+    return { status, ...(action === 'check' && channel !== 'desktopUpgrade' ? { error: '数据格式不兼容' } : {}) }
+  } } }, setInterval: () => {} })
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls.filter(([action]) => action === 'check').map(([, channel]) => channel), ['desktop', 'desktopUpgrade', 'kernel'])
+  assert.equal(nodes.get('error').textContent, '')
+  assert.match(nodes.get('version').textContent, /1\.0\.0 · Linux r7/)
+  assert.match(nodes.get('latest').textContent, /2\.0\.0 · Linux r2/)
+  const install = buttons.find(button => button.dataset.action === 'install')
   assert.equal(install.disabled, false)
   await install.click()
   assert.deepEqual(calls.at(-1), ['install', 'desktopUpgrade'])
-  assert.match(nodes.get('desktopUpgrade-version').textContent, /2\.0\.0.*r2/)
 })
 
 test('Electron routes the explicit whole upgrade with main-owned paths and no ordinary restart', () => {
@@ -135,5 +138,5 @@ test('Electron routes the explicit whole upgrade with main-owned paths and no or
   assert.match(adapter, /\.\.\.options.wholeDesktop/)
   assert.match(adapter, /quitWithoutRelaunch: options.quitWithoutRelaunch/)
   assert.match(adapter, /await markWholeDesktopHealthy\(/)
-  assert.match(adapter, /共享 DSH_HOME 的 CLI/)
+  assert.match(adapter, /关闭正在使用 dsh 的命令行/)
 })

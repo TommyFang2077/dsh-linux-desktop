@@ -72,7 +72,13 @@ export async function createWorkbenchUpdates(options) {
       if (config.desktopUpgrade) {
         try { await manager.checkWholeDesktopUpgrade() } catch (error) { errors.desktopUpgrade = error.message }
       }
-      return { ...manager.status(), errors }
+      const status = manager.status()
+      for (const channel of ['kernel', 'desktop']) if (status[channel].crossEpoch) delete errors[channel]
+      const upgrade = status.desktopUpgrade
+      if (upgrade?.available && !status.desktop.available) {
+        status.desktop = { ...status.desktop, latest: upgrade.latest, latestLinuxRevision: upgrade.latestLinuxRevision }
+      }
+      return { ...status, errors }
     } finally { performing = false }
   })
   ipcMain.handle('dsh-workbench:open-updates', async event => {
@@ -96,12 +102,10 @@ export async function createWorkbenchUpdates(options) {
       const version = manager.status()[channel].available
       if (!version) throw new Error('请先检查更新')
       const answer = await dialog.showMessageBox(window, {
-        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : channel === 'desktopUpgrade' ? '完整桌面' : '桌面端'}至 ${version}${channel !== 'kernel' ? `（Linux r${manager.status()[channel].availableLinuxRevision}）` : ''}？`,
+        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${manager.status()[channel].availableLinuxRevision}` : ''}？`,
         detail: channel === 'desktopUpgrade'
-          ? '请先关闭共享 DSH_HOME 的 CLI。当前任务和 Host 将停止；Electron 完全退出后，完整备份 DSH_HOME、实际 userData 与旧安装到 HOME/Backups/dsh-workbench，再切换桌面。备份全量保留。发现其他写入者或数据变化将中止；新 Host 修改数据后失败仅保留报告，需要显式恢复。'
-          : channel === 'kernel'
-          ? '下载并校验完整内核，在隔离目录试启动；确认停止当前任务后重启应用。不会安装桌面软件包。'
-          : '下载并校验完整桌面归档，确认停止任务后切换 HOME 内的用户版本并重启。不需要 sudo，不替换兼容的新内核。',
+          ? '这次更新会改变数据格式。请先关闭正在使用 dsh 的命令行。应用会停止当前任务并退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开。'
+          : '应用会停止当前任务并重启。',
         buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
       })
       if (answer.response !== 1) return { status: manager.status() }

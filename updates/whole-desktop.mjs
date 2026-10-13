@@ -228,11 +228,13 @@ async function assertNoWriters(roots, inodes = new Set()) {
   for (const name of await fs.readdir('/proc')) {
     if (!/^\d+$/.test(name) || Number(name) === process.pid) continue
     const processPath = `/proc/${name}`
+    let dsh = false
     try {
       if ((await fs.stat(processPath)).uid !== process.getuid()) continue
       if ((await processIdentity(Number(name))).state === 'Z') continue
       const command = (await fs.readFile(join(processPath, 'cmdline'), 'utf8')).split('\0').filter(Boolean)
-      if (command.some(value => /(^|\/)(dsh|dsh-desktop-host|dsh\.mjs)(\/|$)/.test(value))) {
+      dsh = command.some(value => /(^|\/)(dsh|dsh-desktop-host|dsh\.mjs)(\/|$)/.test(value))
+      if (dsh) {
         // Classify a known CLI by its effective DSH_HOME; unrelated isolated roots do not share data.
         const environment = (await fs.readFile(join(processPath, 'environ'), 'utf8')).split('\0')
         const value = key => environment.find(entry => entry.startsWith(`${key}=`))?.slice(key.length + 1)
@@ -271,6 +273,8 @@ async function assertNoWriters(roots, inodes = new Set()) {
       }
     } catch (error) {
       if (['ENOENT', 'ESRCH'].includes(error.code)) continue
+      // Non-dumpable session processes such as systemd --user and (sd-pam) hide their fds from their own UID.
+      if (error.code === 'EACCES' && !dsh) continue
       fail(`Shared writer inspection failed or writer is active: ${error.message}`)
     }
   }

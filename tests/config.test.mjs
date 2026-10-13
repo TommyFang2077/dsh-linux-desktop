@@ -33,7 +33,7 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
 test('alpha.2 declares its data boundary independently of the unchanged Host wire protocol', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
   assert.equal(desktop.version, '0.2.1-alpha.2')
-  assert.equal(desktop.linuxRevision, 2, 'Changed alpha.2 packages need an identity distinct from the published r1 assets')
+  assert.equal(desktop.linuxRevision, 3, 'Changed alpha.2 packages need an identity distinct from the published r1 and r2 assets')
   assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.2')
   assert.equal(desktop.protocol, 4)
   assert.equal(desktop.desktopRange, '>=0.2.1-alpha.2 <0.3.0')
@@ -281,6 +281,15 @@ test('settings version IPC validates its sender and boolean request and isolates
   assert.equal(context.performing, false)
   await invoke({ trusted: true }, false)
   assert.equal(checked.length, 5, 'Read-only queries never check the configured whole-desktop channel')
+  context.manager.check = async channel => { throw new Error(`${channel} 数据格式不兼容`) }
+  context.manager.checkWholeDesktopUpgrade = async () => {}
+  context.manager.status = () => ({ kernel: { version: '1.1.0', latest: '2.0.0', crossEpoch: true },
+    desktop: { version: '1.1.0', linuxRevision: 8, latest: '2.0.0', latestLinuxRevision: 1, available: null, crossEpoch: true },
+    desktopUpgrade: { available: '2.0.0', latest: '2.0.0', latestLinuxRevision: 2 } })
+  const upgrade = await invoke({ trusted: true }, true)
+  assert.deepEqual(Object.keys(upgrade.errors), [], 'Settings shows the next data epoch as the whole upgrade, not as a failure')
+  assert.equal(upgrade.desktop.latest, '2.0.0')
+  assert.equal(upgrade.desktop.latestLinuxRevision, 2)
 })
 
 test('afterPack removes the default ASAR before all artifact formats and rejects remaining ASAR files', async t => {
