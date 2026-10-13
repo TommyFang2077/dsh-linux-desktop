@@ -47,6 +47,10 @@ export default {
     }
     const workbench = join(context.appOutDir, 'resources/app/workbench')
     for (const file of ['desktop.json', 'updates.json']) JSON.parse(readFileSync(join(workbench, file), 'utf8'))
+    let migrationWorker
+    try { migrationWorker = readFileSync(join(context.appOutDir, 'resources/app/lib/workbench-migration-worker.mjs')) }
+    catch (error) { throw new Error('Desktop staging is missing its standalone migration worker', { cause: error }) }
+    if (!migrationWorker.length) throw new Error('Desktop staging contains an empty migration worker')
     hardenPermissions(context.appOutDir)
   },
   protocols: [],
@@ -54,6 +58,7 @@ export default {
     ...config.files,
     'lib/workbench.mjs',
     'lib/workbench-archive.mjs',
+    'lib/workbench-migration-worker.mjs',
     { from: join(root, 'build/workbench-assets'), to: 'workbench', filter: ['**/*'] },
   ],
   extraMetadata: {

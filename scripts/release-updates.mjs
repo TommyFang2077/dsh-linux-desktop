@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util'
 import * as tar from 'tar'
 import { extractDesktop, fileHash, httpsUrl, inventory, verifyFeed } from '../updates/core.mjs'
 import { verifyUserDesktop } from '../updates/user-install.mjs'
+import { releaseFeedNames } from './build-bridge.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const { positionals, values } = parseArgs({ allowPositionals: true, options: {
@@ -73,6 +74,7 @@ if (channel === 'kernel') {
 const payload = Buffer.from(JSON.stringify(release))
 const envelope = { payload: payload.toString('base64'), signature: sign(null, payload, key).toString('base64') }
 verifyFeed(envelope, createPublicKey(key).export({ type: 'spki', format: 'pem' }), channel)
-const destination = join(output, `${channel}-latest.json`)
+const filename = metadata.dataEpoch?.startsWith('dsh-') ? releaseFeedNames(metadata)[channel] : `${channel}-latest.json`
+const destination = join(output, filename)
 await fs.writeFile(destination, JSON.stringify(envelope) + '\n', { flag: 'wx', mode: 0o644 })
 console.log(`Signed ${channel} ${release.version}: ${destination}; no files were uploaded`)

@@ -1,13 +1,14 @@
 # 内核与 Linux 桌面独立更新
 
-## 两条更新链
+## 独立更新与整包迁移
 
 - **内核**：完整 dsh、WebUI、私有 Host 和配套运行时安装到既有 Electron 用户数据目录的 `updates/kernels/<SHA256>`。保留 Ed25519、全量清单、协议、Node 范围、数据兼容标识、隔离试启动、原子激活与启动失败回滚。
 - **HOME 桌面**：完整 Electron 程序归档安装到 `~/Applications/dsh-linux-desktop/versions/<SHA256>`。确认停止任务后原子切换 `current`，明确重启新版本路径，不调用 sudo、pkexec 或系统包管理器；保留兼容的已激活新内核。
+- **跨 epoch 整包升级**：独立的 `desktopUpgrade` 通道验证目标桌面及内置内核，不放宽普通更新的兼容检查。外部迁移进程等待旧 Electron 实际退出，验证完整数据备份后再切换与启动；具体支持范围、失败保持和整组恢复见 [过渡升级与恢复](desktop-migration.md)。
 
 - **deb/rpm**：只将引导器、Node 验证/安装运行时和桌面归档作为 root 管理的静态载荷放在 `/usr/share/dsh-workbench`，并提供 `/usr/bin/dsh-workbench` 启动器。首次正常用户启动时，用包管理器信任的本地载荷摘要调用现有 HOME 安装器；程序与插件只从 `~/Applications/dsh-linux-desktop` 运行。root 调用明确拒绝；启动器不猜测桌面登录用户、不执行 Electron/插件，也不以提权身份访问 HOME。包管理器升级只更新引导载荷，不覆盖或降级已有 HOME 版本。
 
-产品名、应用 ID、Electron userData 与 `~/.dsh` 均不变。应用关闭或更新失败不清理用户配置、会话、插件和内核 pending/rollback 状态。`dataEpoch` 必须一致；只有确认数据格式双向兼容才可沿用，不能为升级便利而放宽。
+产品名、应用 ID、Electron userData 与默认 DSH 数据根均不变。应用关闭或更新失败不清理用户配置、会话、插件和内核 pending/rollback 状态。普通更新的 `dataEpoch` 必须一致；只有确认数据格式双向兼容才可沿用。整包迁移保留目标的真实新 epoch，而非把新内核声明为旧格式兼容。
 
 “官方内核”指固定官方源码的本项目 Linux 构建，不是官方托管的 Linux OTA。已核对的官方渠道没有这里所需的独立 Linux 内核签名载荷；仅安装 npm dsh 不包含完整桌面私有 Host 与支持运行时。
 
@@ -15,15 +16,17 @@
 
 alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部子代理目录写为 `subagent/catalog` version 2。虽然上游 Session 版本仍为 4，alpha.1 读取器会拒绝这些新记录，因此本发行使用新的 `dataEpoch: dsh-0.2.1-alpha.2`，不宣称双向数据兼容。
 
-这次跨 epoch 升级须完全退出旧应用，备份 `~/.dsh` 和既有 Electron 用户数据目录，再通过已验签的完整 alpha.2 桌面归档安装。旧版应用内的桌面与内核 OTA 都会按既有规则阻止跨 epoch 更新；并非清单缺失或下载故障。只更新 deb/rpm 引导包也不会替换已有 HOME 安装，应使用完整归档安装流程。新版保留已提交的旧内核指针与文件，但不会选用不兼容的 alpha.1 内核。尚未提交的试启动仍遵循原有 staged → booting → healthy 生命周期，启动中断时恢复 previous 指针；这不是冻结 pending 状态，也不恢复会话数据。其 pnpm 入口改在 `runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`。
+旧 r7 的桌面与内核 OTA 会按既有规则阻止直接跨 epoch 更新，并非清单缺失或下载故障。本轮源码增加 `alpha.1 r7 → 真实 alpha.1 r8 过渡包 → alpha.2 r2 整包升级`：旧格式签名清单先提供同 epoch 过渡包，再由过渡包的新入口完成退出、自动备份和迁移。源码与本地验收不等于线上已经发布；生产更新源与真实安装切换均另行确认。过渡发布前，手动完整归档安装仍须先完全退出并备份实际 DSH 数据根和 Electron userData。只更新 deb/rpm 引导包不会替换已有 HOME 版本。
+
+新版保留已提交的旧内核指针与文件，但不会选用不兼容的 alpha.1 内核。尚未提交的独立内核试启动仍遵循原有 staged → booting → healthy 生命周期，启动中断时恢复 previous 指针；这不是冻结 pending 状态，也不恢复会话数据。其 pnpm 入口改在 `runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`。
 
 启用 alpha.2 后若需回到 alpha.1，必须同时恢复升级前的数据备份；仅切换程序或内核指针不恢复会话数据。alpha.2 同 epoch 的后续兼容版本仍走原有独立更新通道。
 
 ## 设置中的版本检查
 
-通用设置分别读取当前实际选用的内核、桌面壳版本与 Linux 构建号，并自动检查两条独立签名清单。最新发布与可安装更新分别表示：相同或更旧的发布仍显示其签名版本，但不会变为升级候选；协议或数据不兼容时显示错误，不绕过兼容检查。单个通道失败不隐藏另一通道结果，可以重试检查。
+通用设置分别读取当前实际选用的内核、桌面壳版本与 Linux 构建号，检查两个普通通道和配置启用的整包升级通道。最新发布与可安装更新分别表示：相同或更旧的发布仍显示其签名版本，但不会变为升级候选；普通通道遇到协议或数据不兼容仍显示错误。单个通道失败不隐藏其他通道结果，可以重试检查。
 
-归档由独立、内存受限的子进程通过原生文件系统解包，避免 Electron ASAR 虚拟路径截获；桌面产物不含无用的默认 ASAR 程序，使已发布的旧更新器也能解包。重启先安排新程序路径，待安装器、暂存目录及安装锁完成清理后才退出进程；取消或失败不退出。清单请求限制两分钟，完整载荷下载限制十分钟，仍校验签名声明的大小与摘要。
+归档由独立、内存受限的子进程通过原生文件系统解包，避免 Electron ASAR 虚拟路径截获；桌面产物不含无用的默认 ASAR 程序，使已发布的旧更新器也能解包。普通桌面更新先安排新程序路径，待安装器、暂存目录及安装锁完成清理后退出；整包迁移则将归档交给独立 worker，退出旧进程后才备份与切换。清单请求限制两分钟，完整载荷下载限制十分钟，仍校验签名声明的大小与摘要。
 
 ## 版本与 Linux 构建号
 
@@ -41,7 +44,7 @@ alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部�
 
 ## 发布源与信任
 
-`updates.json` 固定两个清单地址和 Ed25519 公钥，清单托管在本仓库 `update-feed` 分支，资产来自版本化 GitHub Releases。来源可通过 `DSH_WORKBENCH_UPDATE_CONFIG=/绝对路径/updates.json` 在下次完全退出并启动时覆盖；更换公钥即改变信任来源，不能自动接受服务器返回的新密钥，也不能使既有用户内核失去其可信公钥。
+`updates.json` 固定普通内核、普通桌面与独立整包升级的清单地址和 Ed25519 公钥，清单托管在本仓库 `update-feed` 分支，资产来自版本化 GitHub Releases。旧根清单服务 alpha.1 r8，alpha.2 使用 epoch 专属文件；已发布 alpha.2 r1 的显式配置切换见 [双更新源](desktop-migration.md#双更新源)。来源可通过 `DSH_WORKBENCH_UPDATE_CONFIG=/绝对路径/updates.json` 在下次完全退出并启动时覆盖；更换公钥即改变信任来源，既有客户端不自动接受服务器返回的新密钥。
 
 未首次公开发行前 URL 可能为 404，本地配置完整不代表更新服务已上线。私有部署可将通道设为 `null`，窗口会禁用该通道。发布清单与资产必须使用无凭据、无 fragment 的 HTTPS；只有 GitHub Release 同仓库/同文件名到 Release 下载 CDN 的有限跳转可接受，其他重定向仍拒绝。下载和抽取有大小、数量、路径、文件类型、权限与时间限制。
 
@@ -62,9 +65,9 @@ node build/release-updates.mjs kernel \
   --base-url https://your-update-host.example/releases/version/
 
 node build/release-updates.mjs desktop \
-  --archive dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.tar.gz \
-  --deb dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.deb \
-  --rpm dist/dsh-workbench-0.2.1-alpha.2-r1-linux-x64.rpm \
+  --archive dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.tar.gz \
+  --deb dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.deb \
+  --rpm dist/dsh-workbench-0.2.1-alpha.2-r2-linux-x64.rpm \
   --metadata desktop.json --output dist/desktop-release \
   --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/
@@ -76,7 +79,7 @@ node build/release-updates.mjs desktop \
 
 `.github/workflows/linux-updates.yml` 复用 prepare、测试、deb/rpm 与用户归档打包和真实运行时 smoke。main 或手动构建仅上传 deb/rpm、归档、校验和及构建信息；没有签名 Secret 时明确跳过签名。签名阶段才把 Secret写入 runner私有临时文件，公私钥匹配后签名并清理，不把密钥传给构建或打进归档。
 
-只有明确推送匹配 `desktop.json` 的 `workbench-v<官方壳版本>-r<Linux构建号>` 标签，且签名 Secret 已配置时才公开发行。顺序为成功生成/校验 → 上传不可覆盖的版本化资产 → 更新两个固定清单；仅发布作业持有 contents:write，不强推分支，不使用 `releases/latest` 选预发布版本。生产密钥上传、源码推送、发布标签与对外发布需分别明确授权。
+只有明确推送匹配 `desktop.json` 的 `workbench-v<官方壳版本>-r<Linux构建号>` 标签，且签名 Secret 已配置时才公开发行。顺序为成功生成/校验 → 上传不可覆盖的版本化资产 → 更新该 epoch 对应的清单；共享发布并发组串行提交，alpha.2 不覆盖 alpha.1 的旧根清单。仅发布作业持有 contents:write，不强推分支，不使用 `releases/latest` 选预发布版本。生产密钥上传、源码推送、发布标签与对外发布需分别明确授权。
 
 ## 验证
 

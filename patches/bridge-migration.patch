@@ -1,0 +1,75 @@
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 42a045c..f1abe7b 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -167,6 +167,7 @@ interface WorkbenchUpdates {
+ 
+ /** Packaged downstream updater, emitted separately from the upstream main bundle. */
+ interface WorkbenchUpdateModule {
++  assertWholeDesktopStartupAllowed(paths: { home: string; dshHome: string; userData: string }): Promise<void>
+   createWorkbenchUpdates(options: {
+     app: typeof app
+     bundled: { dsh: string; runtime: string }
+@@ -175,6 +176,9 @@ interface WorkbenchUpdateModule {
+     prepareRestart: () => Promise<boolean>
+     restart: (execPath?: string) => void
+     finishRestart: () => void
++    quitWithoutRelaunch: () => void
++    wholeDesktop: { home: string; dshHome: string; userData: string; xdgDataHome: string;
++      oldExecutable: string; node: string; workerPath: string }
+     recover: () => Promise<void>
+     trustedSender: (event: IpcMainInvokeEvent) => boolean
+   }): Promise<WorkbenchUpdates>
+@@ -410,15 +414,29 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+ }
+ 
+ async function main(): Promise<void> {
++  const paths = resolveDesktopPaths()
++  const wholeDesktopPaths = { home: app.getPath('home'), dshHome: dirname(dirname(paths.profile)), userData: app.getPath('userData') }
++  const workbenchModule = process.platform === 'linux' && app.isPackaged
++    ? await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule : undefined
++  if (workbenchModule !== undefined) {
++    try { await workbenchModule.assertWholeDesktopStartupAllowed(wholeDesktopPaths) }
++    catch (error) {
++      const message = error instanceof Error ? error.message : String(error)
++      console.error(message)
++      try { dialog.showErrorBox(app.getName(), message) }
++      catch (dialogError) { console.error(dialogError) }
++      app.exit(1)
++      return
++    }
++  }
+   void pruneCrashReports(app.getPath('logs'))
+   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
+   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
+   const development = !app.isPackaged
+   let workbench: WorkbenchUpdates | undefined
+-  if (process.platform === 'linux' && app.isPackaged) {
++  if (workbenchModule !== undefined) {
+     // This independently emitted ESM module is a downstream packaging interface, not an upstream workspace import.
+-    const module = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
+-    workbench = await module.createWorkbenchUpdates({
++    workbench = await workbenchModule.createWorkbenchUpdates({
+       app,
+       bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
+       verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
+@@ -426,6 +444,11 @@ async function main(): Promise<void> {
+       prepareRestart: () => prepareWorkbenchRestart(),
+       restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
+       finishRestart: () => { quitWithoutConfirmation() },
++      quitWithoutRelaunch: () => { quitWithoutConfirmation() },
++      wholeDesktop: { ...wholeDesktopPaths, xdgDataHome: process.env.XDG_DATA_HOME ?? join(wholeDesktopPaths.home, '.local/share'),
++        oldExecutable: process.execPath,
++        node: await resolveDesktopHostNode(join(process.resourcesPath, 'runtime', 'primary-runtime'), process.execPath),
++        workerPath: fileURLToPath(new URL('./workbench-migration-worker.mjs', import.meta.url)) },
+       recover: () => recoverWorkbenchBackend(),
+       trustedSender: (event) => {
+         try { assertProductSender(event); return true }
+@@ -435,7 +458,6 @@ async function main(): Promise<void> {
+     selectedKernel = workbench.selected
+   }
+   const resources = await runtimeResources()
+-  const paths = resolveDesktopPaths()
+   let primaryRuntime = selectedKernel === undefined
+     ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
+     : join(selectedKernel.runtime, 'primary-runtime')

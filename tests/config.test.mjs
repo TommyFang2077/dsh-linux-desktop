@@ -33,6 +33,7 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
 test('alpha.2 declares its data boundary independently of the unchanged Host wire protocol', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
   assert.equal(desktop.version, '0.2.1-alpha.2')
+  assert.equal(desktop.linuxRevision, 2, 'Changed alpha.2 packages need an identity distinct from the published r1 assets')
   assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.2')
   assert.equal(desktop.protocol, 4)
   assert.equal(desktop.desktopRange, '>=0.2.1-alpha.2 <0.3.0')
@@ -247,9 +248,11 @@ test('settings version IPC validates its sender and boolean request and isolates
   const checked = []
   const context = {
     performing: false,
+    config: {},
     ipcMain: { handle: (name, handler) => { assert.equal(name, 'dsh-workbench:versions'); invoke = handler } },
     options: { trustedSender: event => event.trusted === true },
     manager: { check: async channel => { checked.push(channel); if (channel === 'kernel') throw new Error('HTTP 404') },
+      checkWholeDesktopUpgrade: async () => { checked.push('desktopUpgrade'); throw new Error('HTTP 503') },
       status: () => ({ desktop: { latest: '1.2.0' }, kernel: { version: '1.1.0' } }) },
   }
   runInNewContext(source.slice(start, end), context)
@@ -267,6 +270,17 @@ test('settings version IPC validates its sender and boolean request and isolates
   await assert.rejects(invoke({ trusted: true }, true), /确认对话框/ )
   await invoke({ trusted: true }, false)
   assert.equal(checked.length, 2, 'Read-only queries cannot change a release awaiting installation approval')
+  context.performing = false
+  context.config.desktopUpgrade = { url: 'https://updates.test/whole-desktop.json', publicKey: 'fixture-key' }
+  const configured = await invoke({ trusted: true }, true)
+  assert.deepEqual(checked, ['kernel', 'desktop', 'kernel', 'desktop', 'desktopUpgrade'])
+  assert.equal(configured.errors.kernel, 'HTTP 404')
+  assert.equal(configured.errors.desktop, undefined)
+  assert.equal(configured.errors.desktopUpgrade, 'HTTP 503')
+  assert.equal(configured.desktop.latest, '1.2.0')
+  assert.equal(context.performing, false)
+  await invoke({ trusted: true }, false)
+  assert.equal(checked.length, 5, 'Read-only queries never check the configured whole-desktop channel')
 })
 
 test('afterPack removes the default ASAR before all artifact formats and rejects remaining ASAR files', async t => {
@@ -275,6 +289,8 @@ test('afterPack removes the default ASAR before all artifact formats and rejects
   const workbench = join(appOutDir, 'resources/app/workbench')
   mkdirSync(workbench, { recursive: true })
   for (const file of ['desktop.json', 'updates.json']) writeFileSync(join(workbench, file), '{}')
+  mkdirSync(join(appOutDir, 'resources/app/lib'))
+  writeFileSync(join(appOutDir, 'resources/app/lib/workbench-migration-worker.mjs'), 'export const fixture = true')
   const defaultAsar = join(appOutDir, 'resources/default_app.asar')
   writeFileSync(defaultAsar, 'default app')
   let verified = false

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import * as fs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
+import { assertWholeDesktopStartupAllowed } from '../build/whole-desktop.mjs'
 
 const main = readFileSync(new URL('../build/upstream/apps/desktop/src/main.ts', import.meta.url), 'utf8')
 
@@ -41,4 +43,97 @@ test('packaged Linux Hosts advertise the actual selected kernel, not an assumed 
   const adapter = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
   assert.match(adapter, /else installed = await manager\.installDesktop\(options\.prepareRestart, artifact => installUserDesktop/)
   assert.doesNotMatch(adapter, /installSystemDesktop|installedFormat|system-install\.mjs/)
+})
+
+test('whole desktop startup checks actual data roots before opening settings and never relaunches its parent', () => {
+  const start = main.indexOf('async function main(): Promise<void> {')
+  const settings = main.indexOf('const desktopSettings = readDesktopSettings', start)
+  const guard = main.indexOf('await workbenchModule.assertWholeDesktopStartupAllowed(', start)
+  assert.ok(guard > start && guard < settings, 'migration guard must precede all main data reads')
+  const request = main.slice(start, main.indexOf('let primaryRuntime', start))
+  assert.match(request, /dshHome: dirname\(dirname\(paths.profile\)\)/)
+  assert.match(request, /userData: app.getPath\('userData'\)/)
+  assert.match(request, /oldExecutable: process.execPath/)
+  assert.match(request, /resolveDesktopHostNode\(join\(process.resourcesPath, 'runtime', 'primary-runtime'\), process.execPath\)/)
+  assert.match(request, /workerPath: fileURLToPath\(new URL\('\.\/workbench-migration-worker.mjs', import.meta.url\)\)/)
+  const line = main.split('\n').find(line => line.includes('quitWithoutRelaunch: () => {'))
+  assert.ok(line)
+  let quits = 0
+  runInNewContext(`({${line.trim()}}).quitWithoutRelaunch`, {
+    quitWithoutConfirmation: () => { quits++ },
+    app: { relaunch: () => assert.fail('worker, not parent, starts the target executable') },
+  })()
+  assert.equal(quits, 1)
+})
+
+test('a real active migration startup guard exits without reading data or entering fatal repair', async t => {
+  const home = await fs.mkdtemp('/tmp/dsh-main-guard-test-')
+  t.after(() => fs.rm(home, { recursive: true, force: true }))
+  const directory = join(home, 'Backups/dsh-workbench/transaction')
+  const lock = join(home, 'Backups/dsh-workbench/.migration-lock')
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 })
+  await fs.mkdir(lock, { mode: 0o700 })
+  await fs.writeFile(join(lock, 'owner.json'), JSON.stringify({ transactionId: 'guard-test', directory }))
+  await fs.writeFile(join(directory, 'report.json'), JSON.stringify({ phase: 'backup' }))
+  const start = main.indexOf('async function main(): Promise<void> {')
+  const code = main.slice(main.indexOf('if (workbenchModule !== undefined)', start),
+    main.indexOf('const desktopSettings = readDesktopSettings', start))
+  for (const nativeFails of [false, true]) {
+    let reads = 0
+    let exit
+    const errors = []
+    const boxes = []
+    await runInNewContext(`(async () => { ${code} readData(); })()`, {
+      workbenchModule: { assertWholeDesktopStartupAllowed }, wholeDesktopPaths: { home }, Error,
+      console: { error: value => errors.push(String(value)) },
+      dialog: { showErrorBox: (title, message) => { boxes.push([title, message]); if (nativeFails) throw new Error('native dialog failed') } },
+      app: { getName: () => 'Fixture Desktop', exit: code => { exit = code } }, readData: () => { reads++ },
+      reportFatal: () => assert.fail('migration gate never enters data-writing fatal repair'),
+    })
+    assert.equal(reads, 0)
+    assert.equal(exit, 1)
+    assert.equal(boxes.length, 1)
+    assert.equal(boxes[0][0], 'Fixture Desktop')
+    assert.ok(boxes[0][1].includes(join(directory, 'report.json')))
+    assert.ok(errors.some(message => message.includes(join(directory, 'report.json'))))
+  }
+})
+
+test('the shipped renderer exposes explicit whole desktop check and install actions', async () => {
+  const html = readFileSync(new URL('../updates/updates.html', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../updates/updates.js', import.meta.url), 'utf8')
+  const nodes = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], { textContent: '' }]))
+  const buttons = [...html.matchAll(/<button data-action="([^"]+)" data-channel="([^"]+)"/g)].map(match => ({
+    dataset: { action: match[1], channel: match[2] }, disabled: false,
+    addEventListener(_event, listener) { this.click = listener },
+  }))
+  const state = { version: '1.0.0', linuxRevision: 7, available: '2.0.0', availableLinuxRevision: 2,
+    latest: '2.0.0', latestLinuxRevision: 2, configured: true }
+  const status = { kernel: state, desktop: state, desktopUpgrade: state, busy: false, notice: '' }
+  const calls = []
+  runInNewContext(source, { document: {
+    getElementById: id => { assert.ok(nodes.has(id), `shipped HTML contains ${id}`); return nodes.get(id) },
+    querySelectorAll: selector => selector === 'button' ? buttons
+      : buttons.filter(button => selector === `[data-channel="${button.dataset.channel}"]`),
+  }, window: { workbenchUpdates: { invoke: async (action, channel) => { calls.push([action, channel]); return { status } } } },
+  setInterval: () => {} })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(calls.some(([action, channel]) => action === 'check' && channel === 'desktopUpgrade'))
+  const install = buttons.find(button => button.dataset.action === 'install' && button.dataset.channel === 'desktopUpgrade')
+  assert.ok(install)
+  assert.equal(install.disabled, false)
+  await install.click()
+  assert.deepEqual(calls.at(-1), ['install', 'desktopUpgrade'])
+  assert.match(nodes.get('desktopUpgrade-version').textContent, /2\.0\.0.*r2/)
+})
+
+test('Electron routes the explicit whole upgrade with main-owned paths and no ordinary restart', () => {
+  const adapter = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
+  assert.match(adapter, /export \{ assertWholeDesktopStartupAllowed \}/)
+  assert.match(adapter, /manager\.checkWholeDesktopUpgrade\(\)/)
+  assert.match(adapter, /manager\.installWholeDesktopUpgrade\(\{/)
+  assert.match(adapter, /\.\.\.options.wholeDesktop/)
+  assert.match(adapter, /quitWithoutRelaunch: options.quitWithoutRelaunch/)
+  assert.match(adapter, /await markWholeDesktopHealthy\(/)
+  assert.match(adapter, /共享 DSH_HOME 的 CLI/)
 })

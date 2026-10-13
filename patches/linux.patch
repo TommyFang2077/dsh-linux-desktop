@@ -470,7 +470,7 @@ index 5d9d4607..bec0ff5e 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 1202670a..9b774ea5 100644
+index 1202670a..fb0e1a8f 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -519,7 +519,7 @@ index 1202670a..9b774ea5 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -149,9 +152,47 @@ interface RuntimeResources {
+@@ -149,9 +152,51 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -540,6 +540,7 @@ index 1202670a..9b774ea5 100644
 +
 +/** Packaged downstream updater, emitted separately from the upstream main bundle. */
 +interface WorkbenchUpdateModule {
++  assertWholeDesktopStartupAllowed(paths: { home: string; dshHome: string; userData: string }): Promise<void>
 +  createWorkbenchUpdates(options: {
 +    app: typeof app
 +    bundled: { dsh: string; runtime: string }
@@ -548,6 +549,9 @@ index 1202670a..9b774ea5 100644
 +    prepareRestart: () => Promise<boolean>
 +    restart: (execPath?: string) => void
 +    finishRestart: () => void
++    quitWithoutRelaunch: () => void
++    wholeDesktop: { home: string; dshHome: string; userData: string; xdgDataHome: string;
++      oldExecutable: string; node: string; workerPath: string }
 +    recover: () => Promise<void>
 +    trustedSender: (event: IpcMainInvokeEvent) => boolean
 +  }): Promise<WorkbenchUpdates>
@@ -569,7 +573,7 @@ index 1202670a..9b774ea5 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -161,6 +202,62 @@ function runtimeResources(): RuntimeResources {
+@@ -161,6 +206,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
@@ -632,7 +636,26 @@ index 1202670a..9b774ea5 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -318,12 +415,33 @@ async function main(): Promise<void> {
+@@ -314,16 +415,55 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+ }
+ 
+ async function main(): Promise<void> {
++  const paths = resolveDesktopPaths()
++  const wholeDesktopPaths = { home: app.getPath('home'), dshHome: dirname(dirname(paths.profile)), userData: app.getPath('userData') }
++  const workbenchModule = process.platform === 'linux' && app.isPackaged
++    ? await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule : undefined
++  if (workbenchModule !== undefined) {
++    try { await workbenchModule.assertWholeDesktopStartupAllowed(wholeDesktopPaths) }
++    catch (error) {
++      const message = error instanceof Error ? error.message : String(error)
++      console.error(message)
++      try { dialog.showErrorBox(app.getName(), message) }
++      catch (dialogError) { console.error(dialogError) }
++      app.exit(1)
++      return
++    }
++  }
+   const desktopSettings = readDesktopSettings(app.getPath('userData'))
    void pruneCrashReports(app.getPath('logs'))
    const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
    const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -643,10 +666,9 @@ index 1202670a..9b774ea5 100644
 -    ? developmentPrimaryRuntime()
 -    : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +  let workbench: WorkbenchUpdates | undefined
-+  if (process.platform === 'linux' && app.isPackaged) {
++  if (workbenchModule !== undefined) {
 +    // This independently emitted ESM module is a downstream packaging interface, not an upstream workspace import.
-+    const module = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
-+    workbench = await module.createWorkbenchUpdates({
++    workbench = await workbenchModule.createWorkbenchUpdates({
 +      app,
 +      bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
 +      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
@@ -654,6 +676,11 @@ index 1202670a..9b774ea5 100644
 +      prepareRestart: () => prepareWorkbenchRestart(),
 +      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
 +      finishRestart: () => { quitWithoutConfirmation() },
++      quitWithoutRelaunch: () => { quitWithoutConfirmation() },
++      wholeDesktop: { ...wholeDesktopPaths, xdgDataHome: process.env.XDG_DATA_HOME ?? join(wholeDesktopPaths.home, '.local/share'),
++        oldExecutable: process.execPath,
++        node: await resolveDesktopHostNode(join(process.resourcesPath, 'runtime', 'primary-runtime'), process.execPath),
++        workerPath: fileURLToPath(new URL('./workbench-migration-worker.mjs', import.meta.url)) },
 +      recover: () => recoverWorkbenchBackend(),
 +      trustedSender: (event) => {
 +        try { assertProductSender(event); return true }
@@ -663,7 +690,6 @@ index 1202670a..9b774ea5 100644
 +    selectedKernel = workbench.selected
 +  }
 +  const resources = await runtimeResources()
-+  const paths = resolveDesktopPaths()
 +  let primaryRuntime = selectedKernel === undefined
 +    ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
 +    : join(selectedKernel.runtime, 'primary-runtime')
@@ -671,7 +697,7 @@ index 1202670a..9b774ea5 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -444,7 +562,11 @@ async function main(): Promise<void> {
+@@ -444,7 +584,11 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -684,7 +710,7 @@ index 1202670a..9b774ea5 100644
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -510,8 +632,9 @@ async function main(): Promise<void> {
+@@ -510,8 +654,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -696,7 +722,7 @@ index 1202670a..9b774ea5 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -566,77 +689,120 @@ async function main(): Promise<void> {
+@@ -566,77 +711,120 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -874,7 +900,7 @@ index 1202670a..9b774ea5 100644
    )
  
    const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -929,7 +1095,7 @@ async function main(): Promise<void> {
+@@ -929,7 +1117,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -883,7 +909,7 @@ index 1202670a..9b774ea5 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -956,7 +1122,10 @@ async function main(): Promise<void> {
+@@ -956,7 +1144,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -895,7 +921,7 @@ index 1202670a..9b774ea5 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -978,19 +1147,22 @@ async function main(): Promise<void> {
+@@ -978,19 +1169,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -922,7 +948,7 @@ index 1202670a..9b774ea5 100644
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1229,7 +1401,9 @@ async function main(): Promise<void> {
+@@ -1229,7 +1423,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -933,7 +959,7 @@ index 1202670a..9b774ea5 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1244,6 +1418,7 @@ async function main(): Promise<void> {
+@@ -1244,6 +1440,7 @@ async function main(): Promise<void> {
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -941,7 +967,7 @@ index 1202670a..9b774ea5 100644
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1279,6 +1454,7 @@ async function main(): Promise<void> {
+@@ -1279,6 +1476,7 @@ async function main(): Promise<void> {
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }

@@ -56,6 +56,50 @@ async function fixture(t, changes = {}) {
     counts: () => ({ verified, probes }) }
 }
 
+async function wholeDesktopFixture(t, archiveChanges = {}) {
+  const f = await fixture(t)
+  const home = join(f.root, 'home')
+  const input = join(f.root, 'whole-input')
+  const app = join(input, 'app')
+  const metadata = { version: '2.0.0', linuxRevision: 2, protocol: 4, dataEpoch: 'schema-2',
+    desktopRange: '>=2 <3', kernelRange: '>=2 <3', nodeRange: '>=24 <25', nodeVersion: '24.18.1', electronVersion: '41.0.0' }
+  const runtime = []
+  const files = {
+    'dsh-workbench': '#!/bin/sh\nprintf "v41.0.0\\n"\n',
+    'resources/app/package.json': JSON.stringify({ name: 'dsh-workbench', version: '2.0.0', linuxRevision: 2 }),
+    'resources/app/workbench/desktop.json': JSON.stringify({ ...metadata, ...archiveChanges }),
+    'resources/runtime/primary-runtime/runtime.json': JSON.stringify({ platform: 'linux', arch: 'x64', node: '24.18.1' }),
+    'resources/runtime/primary-runtime/dependencies/node/bin/node': '#!/bin/sh\nprintf "v24.18.1\\n"\n',
+  }
+  const sharedPackages = ['dsh', 'dsh-desktop-host'].map(name => ({ name: `@deepseek-ai/${name}`, version: '2.0.0', path: `node_modules/@deepseek-ai/${name}` }))
+  for (const entry of sharedPackages) {
+    const path = `${entry.path}/package.json`
+    const bytes = Buffer.from(JSON.stringify({ name: entry.name, version: entry.version }))
+    files[`resources/app/dsh/${path}`] = bytes
+    runtime.push({ path, bytes: bytes.length, sha256: sha(bytes), executable: false })
+  }
+  files['resources/app/dsh/desktop-runtime.json'] = JSON.stringify({ schemaVersion: 1, platform: 'linux', arch: 'x64',
+    release: { schemaVersion: 1, version: '2.0.0', hostProtocolVersion: 4, nodeVersion: '24.18.1', pnpmVersion: '11.7.0' },
+    sharedPackages, files: runtime.sort((a, b) => a.path < b.path ? -1 : 1) })
+  for (const [path, bytes] of Object.entries(files)) {
+    await fs.mkdir(join(app, path, '..'), { recursive: true, mode: 0o700 })
+    await fs.writeFile(join(app, path), bytes, { mode: path === 'dsh-workbench' || path.endsWith('/bin/node') ? 0o700 : 0o600 })
+  }
+  const archive = join(f.root, 'whole.tar.gz')
+  await tar.c({ file: archive, cwd: input, gzip: true, portable: true }, ['app'])
+  const bytes = await fs.readFile(archive)
+  const release = { ...metadata, schemaVersion: 2, channel: 'desktop', platform: 'linux', arch: 'x64', format: 'tar.gz',
+    asset: { url: 'https://updates.test/whole.tar.gz', sha256: sha(bytes), size: bytes.length } }
+  f.options.config.desktopUpgrade = { url: 'https://updates.test/whole.json', publicKey }
+  f.responses.set('https://updates.test/whole.json', Buffer.from(JSON.stringify(signed(release))))
+  f.responses.set(release.asset.url, bytes)
+  const request = { home, root: join(home, 'Applications/dsh-linux-desktop'), dshHome: join(home, '.dsh'),
+    userData: join(home, '.config/dsh-workbench'), xdgDataHome: join(home, '.local/share'), oldExecutable: process.execPath,
+    node: process.execPath, workerPath: fileURLToPath(new URL('../build/upstream/apps/desktop/lib/workbench-migration-worker.mjs', import.meta.url)) }
+  for (const path of [request.home, request.dshHome, request.userData]) await fs.mkdir(path, { recursive: true, mode: 0o700 })
+  return { ...f, request }
+}
+
 test('offline signing tool emits a verifiable complete kernel archive without publishing', async t => {
   const f = await fixture(t)
   await fs.writeFile(join(f.payload, 'dsh/desktop-runtime.json'), JSON.stringify({ release: { version: '1.1.0', hostProtocolVersion: 4 } }))
@@ -220,9 +264,108 @@ test('a new data epoch blocks both OTA channels before activation', async t => {
     linuxRevision: 1, version: '1.2.0', nodeVersion: '24.18.1', kernelRange: '>=1 <2' }
   for (const [channel, release] of [['kernel', kernel], ['desktop', desktop]]) {
     f.responses.set(`https://updates.test/${channel}.json`, Buffer.from(JSON.stringify(signed(release))))
-    await assert.rejects(f.manager.check(channel), /不兼容/)
+    await assert.rejects(f.manager.check(channel), /不兼容.*完整桌面升级/)
     assert.equal(f.manager.status()[channel].available, null)
+    assert.equal(f.manager.status()[channel].crossEpoch, true)
     assert.equal(JSON.stringify(f.manager.state), before)
+  }
+})
+
+test('explicit whole desktop checking admits a signed next epoch without changing the running identity', async t => {
+  const f = await fixture(t)
+  f.options.config.desktopUpgrade = { url: 'https://updates.test/whole.json', publicKey }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    version: '2.0.0', linuxRevision: 1, protocol: 5, dataEpoch: 'schema-2',
+    desktopRange: '>=2 <3', kernelRange: '>=2 <3', nodeRange: '>=26 <27',
+    nodeVersion: '26.0.0', electronVersion: '42.0.0' }
+  const envelope = signed(release)
+  f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(envelope)))
+  f.responses.set('https://updates.test/whole.json', Buffer.from(JSON.stringify(envelope)))
+  const before = JSON.stringify({ desktop: f.manager.desktop, selected: f.manager.selected, state: f.manager.state })
+  await assert.rejects(f.manager.check('desktop'), /不兼容/)
+  assert.equal(f.manager.status().desktop.available, null)
+  const result = await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(result.desktopUpgrade.available, '2.0.0')
+  assert.equal(result.desktopUpgrade.availableLinuxRevision, 1)
+  assert.equal(result.desktopUpgrade.configured, true)
+  assert.equal(JSON.stringify({ desktop: f.manager.desktop, selected: f.manager.selected, state: f.manager.state }), before)
+  for (const bad of [signed(release, generateKeyPairSync('ed25519').privateKey),
+    { ...envelope, payload: Buffer.from(JSON.stringify({ ...release, dataEpoch: 'tampered' })).toString('base64') },
+    signed({ ...release, nodeRange: '>=24 <25' }), signed({ ...release, electronVersion: undefined }),
+    signed({ ...release, kernelRange: '>=1 <2' })]) {
+    f.responses.set('https://updates.test/whole.json', Buffer.from(JSON.stringify(bad)))
+    await assert.rejects(f.manager.checkWholeDesktopUpgrade(), /签名|运行时/)
+    assert.equal(f.manager.status().desktopUpgrade.available, null)
+  }
+})
+
+test('whole desktop install revalidates its signature before download or Host preparation', async t => {
+  const f = await fixture(t)
+  f.options.config.desktopUpgrade = { url: 'https://updates.test/whole.json', publicKey }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    version: '2.0.0', linuxRevision: 1, dataEpoch: 'schema-2', nodeVersion: '24.18.1',
+    kernelRange: '>=2 <3', electronVersion: '41.0.0' }
+  f.responses.set('https://updates.test/whole.json', Buffer.from(JSON.stringify(signed(release))))
+  await f.manager.checkWholeDesktopUpgrade()
+  f.options.config.desktopUpgrade.publicKey = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' })
+  let prepared = false
+  await assert.rejects(f.manager.installWholeDesktopUpgrade({}, {
+    prepareRestart: async () => { prepared = true; return true },
+    recover: async () => {}, quitWithoutRelaunch: () => assert.fail('must remain alive'),
+  }), /签名/)
+  assert.equal(prepared, false)
+  assert.equal(f.manager.state.active, null)
+  assert.equal(f.manager.busy, false)
+})
+
+test('whole desktop public install reaches real archive validation and cancellation without changing data', async t => {
+  const f = await wholeDesktopFixture(t)
+  await fs.writeFile(join(f.request.dshHome, 'sentinel'), 'old data\n')
+  await f.manager.checkWholeDesktopUpgrade()
+  let prepared = 0
+  const result = await f.manager.installWholeDesktopUpgrade(f.request, {
+    prepareRestart: async () => { prepared++; return false },
+    recover: async () => assert.fail('cancel before Host stop does not need recovery'),
+    quitWithoutRelaunch: () => assert.fail('cancelled parent remains alive'),
+  })
+  assert.deepEqual(result, { kind: 'cancelled' })
+  assert.equal(prepared, 1)
+  assert.equal(await fs.readFile(join(f.request.dshHome, 'sentinel'), 'utf8'), 'old data\n')
+  assert.equal(f.manager.desktop.dataEpoch, 'schema-1')
+  assert.equal(f.manager.state.active, null)
+  await assert.rejects(fs.stat(join(f.request.root, 'current')), { code: 'ENOENT' })
+  assert.equal((await fs.readdir(f.options.root)).some(name => name.startsWith('.whole-desktop-')), false)
+})
+
+test('whole desktop preparation without clean acknowledgement recovers the running Host and keeps Electron alive', async t => {
+  const f = await wholeDesktopFixture(t)
+  await f.manager.checkWholeDesktopUpgrade()
+  let recovered = 0
+  await assert.rejects(f.manager.installWholeDesktopUpgrade(f.request, {
+    prepareRestart: async () => { throw new Error('Host stop failed without clean acknowledgement') },
+    recover: async () => { recovered++ },
+    quitWithoutRelaunch: () => assert.fail('unclean parent must remain alive'),
+  }), /without clean acknowledgement/)
+  assert.equal(recovered, 1)
+  assert.equal(f.manager.busy, false)
+  assert.equal(f.manager.state.active, null)
+  await assert.rejects(fs.stat(join(f.request.root, 'current')), { code: 'ENOENT' })
+})
+
+test('signed target identity never substitutes for the identity inside its full desktop archive', async t => {
+  for (const drift of [{ dataEpoch: 'schema-1' }, { protocol: 5 }, { nodeVersion: '24.0.0' }]) {
+    await t.test(Object.keys(drift)[0], async t => {
+      const f = await wholeDesktopFixture(t, drift)
+      await f.manager.checkWholeDesktopUpgrade()
+      let prepared = false
+      await assert.rejects(f.manager.installWholeDesktopUpgrade(f.request, {
+        prepareRestart: async () => { prepared = true; return false },
+        recover: async () => {}, quitWithoutRelaunch: () => assert.fail('invalid archive keeps parent alive'),
+      }), /metadata|nodeVersion|protocol|dataEpoch|运行时|签名|target/)
+      assert.equal(prepared, false)
+      assert.equal(f.manager.state.active, null)
+      await assert.rejects(fs.stat(join(f.request.root, 'current')), { code: 'ENOENT' })
+    })
   }
 })
 
