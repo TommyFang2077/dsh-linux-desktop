@@ -36,6 +36,8 @@ test('CI prepares real packaged runtimes before testing the public afterPack ver
   assert.ok(build.indexOf('make package') < build.indexOf('make test'))
   assert.ok(build.includes('dsh-0.2.1-alpha.1'))
   for (const file of ['bridge-update', 'workflow', 'manifest']) assert.ok(build.includes(`tests/${file}.test.mjs`))
+  assert.ok(workflow.jobs.build.steps.some(step => step.run?.includes('git fetch --depth=1 origin tag workbench-v0.2.1-alpha.1-r7')))
+  assert.ok(workflow.jobs.build.steps.some(step => step.run?.includes('kernel.apparmor_restrict_unprivileged_userns=0')))
 })
 
 test('CI preflight validates feeds, permits unsigned branch builds and refuses release tags without signing keys', () => {
