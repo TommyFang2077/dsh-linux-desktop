@@ -37,12 +37,24 @@ jobs:
           import assert from 'node:assert/strict'
           import { createPublicKey } from 'node:crypto'
           import { readFileSync } from 'node:fs'
+          import { releaseFeedNames } from './scripts/build-bridge.mjs'
           const config = JSON.parse(readFileSync('updates.json', 'utf8'))
+          const { version, linuxRevision, dataEpoch } = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          const upstream = JSON.parse(readFileSync('upstream.json', 'utf8'))
+          const official = {
+            '0.2.1-alpha.1': ['5badb15009ae1756c3afe0ae0cef1faafc290ccc', '11.7.0'],
+            '0.2.1-alpha.2': ['d743267388641bc76f17c45ce8b4c231aed1d32c', '11.28.5'],
+          }
+          assert.equal(upstream.repository, 'https://github.com/deepseek-ai/deepseek-harness.git')
+          assert.equal(upstream.version, version)
+          assert.deepEqual([upstream.commit, upstream.pnpm], official[version])
+          const feeds = releaseFeedNames({ version, linuxRevision, dataEpoch })
           for (const channel of ['kernel', 'desktop']) {
-            assert.equal(config[channel].url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${channel}-latest.json`)
+            assert.equal(config[channel].url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${feeds[channel]}`)
             assert.equal(createPublicKey(config[channel].publicKey).asymmetricKeyType, 'ed25519')
           }
-          const { version, linuxRevision } = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          assert.equal(config.desktopUpgrade.url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/desktop-dsh-0.2.1-alpha.2-latest.json`)
+          assert.equal(config.desktopUpgrade.publicKey, config.desktop.publicKey)
           assert.ok(Number.isSafeInteger(linuxRevision) && linuxRevision > 0)
           if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(process.env.GITHUB_REF_NAME, `workbench-v${version}-r${linuxRevision}`)
           JS
@@ -50,11 +62,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git python3 rpm libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
+      - name: Fetch the frozen alpha.1 baseline
+        run: git fetch --depth=1 origin tag workbench-v0.2.1-alpha.1-r7
+      - name: Permit user namespaces for migration tests
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Prepare, test and package official Linux sources
         run: |
-          make prepare
-          make test
           make package
+          if [[ "$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).dataEpoch')" == dsh-0.2.1-alpha.1 ]]; then
+            node --test tests/bridge-update.test.mjs tests/workflow.test.mjs tests/manifest.test.mjs
+          else
+            make test
+          fi
           node --test tests/archive-worker.test.mjs
       - name: Sign independent kernel and desktop feeds
         if: env.HAS_SIGNING_KEY == 'true'
@@ -73,7 +92,7 @@ jobs:
           import { readFileSync } from 'node:fs'
           const key = createPublicKey(readFileSync(process.argv[2])).export({ type: 'spki', format: 'der' })
           const config = JSON.parse(readFileSync('updates.json', 'utf8'))
-          for (const channel of ['kernel', 'desktop']) {
+          for (const channel of ['kernel', 'desktop', 'desktopUpgrade']) {
             assert.deepEqual(createPublicKey(config[channel].publicKey).export({ type: 'spki', format: 'der' }), key)
           }
           JS
@@ -131,9 +150,9 @@ jobs:
           flags=(--verify-tag --target "$GITHUB_SHA")
           if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-            --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Independent signed kernel and desktop updates.' \
+            --title "dsh-linux-desktop $version (Linux r$revision)" --notes 'Unofficial DeepSeek Harness Linux adaptation built from pinned official sources. Alpha.1 to alpha.2 crosses a data compatibility boundary: both old in-app OTA channels intentionally block it. Quit the old app, back up ~/.dsh and ~/.config/dsh-workbench, verify and install the full tar.gz archive using the README instructions. Updating only deb/rpm does not replace an existing HOME installation. Downgrading to alpha.1 also requires restoring the pre-upgrade data backup. Independent signed updates continue within the alpha.2 data epoch.' \
             artifacts/dsh-workbench-*-linux-x64.tar.gz artifacts/dsh-workbench-*-linux-x64.deb artifacts/dsh-workbench-*-linux-x64.rpm artifacts/SHA256SUMS artifacts/build-info.json \
-            artifacts/kernel-release/*.tgz artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json
+            artifacts/kernel-release/*.tgz artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json
           feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")
           git init --initial-branch=update-feed "$feed"
           git -C "$feed" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
@@ -144,10 +163,12 @@ jobs:
             code=$?
             test "$code" = 2
           fi
-          cp artifacts/kernel-release/kernel-latest.json artifacts/desktop-release/desktop-latest.json "$feed/"
+          cp artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json "$feed/"
           git -C "$feed" config user.name 'github-actions[bot]'
           git -C "$feed" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git -C "$feed" add kernel-latest.json desktop-latest.json
+          for file in artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json; do
+            git -C "$feed" add "$(basename "$file")"
+          done
           if git -C "$feed" diff --cached --quiet; then exit 0; fi
           git -C "$feed" commit -m "Publish signed update feeds for $RELEASE_TAG"
           git -C "$feed" -c credential.helper='!gh auth git-credential' push origin HEAD:refs/heads/update-feed

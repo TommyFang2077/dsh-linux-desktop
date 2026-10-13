@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import semver from 'semver'
 import * as tar from 'tar'
+import { startWholeDesktopUpgrade } from './whole-desktop.mjs'
 
 const MAX_DOWNLOAD = 1024 ** 3
 const MAX_UNPACKED = 4 * 1024 ** 3
@@ -205,7 +206,7 @@ export class UpdateManager {
     if (this.state.pending === 'booting') await this.rollback('上次新内核启动中断，已恢复原内核')
     if (this.state.active) {
       try {
-        const selected = await this.readKernel(this.state.active)
+        const selected = await this.readKernel(this.state.active, true)
         if (semver.gte(selected.version, this.bundled.version)) this.selected = selected
         if (this.state.pending === 'staged') {
           this.state.pending = 'booting'
@@ -214,19 +215,25 @@ export class UpdateManager {
       } catch (error) {
         if (!this.state.pending) throw error
         await this.rollback(`新内核校验失败，已回滚：${error.message}`)
-        if (this.state.active) this.selected = await this.readKernel(this.state.active)
+        if (this.state.active) this.selected = await this.readKernel(this.state.active, true)
       }
     }
     return this.selected
   }
 
-  async readKernel(id) {
+  async readKernel(id, allowSuperseded = false) {
     if (!digest(id)) fail('内核标识无效')
     const directory = join(this.root, 'kernels', id)
     if ((await fs.lstat(directory)).isSymbolicLink()) fail('内核目录不能为符号链接')
     const envelope = JSON.parse(await fs.readFile(join(directory, 'release.json'), 'utf8'))
     const release = verifyFeed(envelope, this.source('kernel').publicKey, 'kernel')
     if (release.asset.sha256 !== id) fail('内核指针与摘要不一致')
+    // A full desktop installation may supersede an older data epoch; never execute that old tree.
+    if (allowSuperseded && release.dataEpoch !== this.desktop.dataEpoch
+      && semver.lt(release.version, this.bundled.version)) {
+      this.notice = '完整桌面已升级，使用自带内核；旧数据版本的内核文件保留，回退须恢复升级前数据备份'
+      return this.bundled
+    }
     checkCompatibility(release, this.desktop)
     await verifyKernelTree(directory, release)
     await this.verifyKernel(join(directory, 'dsh'), release.version)
@@ -234,7 +241,7 @@ export class UpdateManager {
   }
 
   source(channel) {
-    if (!CHANNELS.includes(channel) || !object(this.config[channel])
+    if (![...CHANNELS, 'desktopUpgrade'].includes(channel) || !object(this.config[channel])
       || typeof this.config[channel].publicKey !== 'string') fail('此更新通道未配置发布源和签名公钥')
     httpsUrl(this.config[channel].url)
     return this.config[channel]
@@ -244,12 +251,20 @@ export class UpdateManager {
     return {
       busy: this.busy, progress: this.progress ?? '', notice: this.notice, restartRequired: this.state.pending === 'staged',
       kernel: { version: this.selected.version, bundledVersion: this.bundled.version,
-        available: this.candidates.kernel?.release.version ?? null, latest: this.latest.kernel?.version ?? null, configured: Boolean(this.config.kernel) },
+        available: this.candidates.kernel?.release.version ?? null, latest: this.latest.kernel?.version ?? null, configured: Boolean(this.config.kernel),
+        crossEpoch: Boolean(this.latest.kernel) && this.latest.kernel.dataEpoch !== this.desktop.dataEpoch },
       desktop: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
         available: this.candidates.desktop?.release.version ?? null,
         availableLinuxRevision: this.candidates.desktop?.release.linuxRevision ?? null,
         latest: this.latest.desktop?.version ?? null, latestLinuxRevision: this.latest.desktop?.linuxRevision ?? null,
-        configured: Boolean(this.config.desktop) },
+        configured: Boolean(this.config.desktop),
+        crossEpoch: Boolean(this.latest.desktop) && this.latest.desktop.dataEpoch !== this.desktop.dataEpoch },
+      desktopUpgrade: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
+        available: this.candidates.desktopUpgrade?.release.version ?? null,
+        availableLinuxRevision: this.candidates.desktopUpgrade?.release.linuxRevision ?? null,
+        latest: this.latest.desktopUpgrade?.version ?? null,
+        latestLinuxRevision: this.latest.desktopUpgrade?.linuxRevision ?? null,
+        configured: Boolean(this.config.desktopUpgrade), handOff: this.wholeDesktopHandOff ?? null },
     }
   }
 
@@ -300,6 +315,7 @@ export class UpdateManager {
       const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       const release = verifyFeed(envelope, source.publicKey, channel)
       this.latest = { ...this.latest, [channel]: release }
+      if (release.dataEpoch !== this.desktop.dataEpoch) fail('新版本使用新的数据格式，普通更新不兼容；请使用「完整桌面升级」')
       if (channel === 'kernel') checkCompatibility(release, this.desktop)
       else {
         checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
@@ -309,6 +325,35 @@ export class UpdateManager {
       const current = channel === 'kernel' ? this.selected.version : this.desktop.version
       if (semver.gt(release.version, current) || (channel === 'desktop' && semver.eq(release.version, current)
         && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) this.candidates[channel] = { release, envelope }
+      return this.status()
+    })
+  }
+
+  /** Explicit full-bundle candidate; ordinary check/install never cross protocol or data epochs. */
+  async checkWholeDesktopUpgrade() {
+    return this.exclusive(async () => {
+      delete this.candidates.desktopUpgrade
+      delete this.latest.desktopUpgrade
+      const source = this.source('desktopUpgrade')
+      const response = await this.response(source.url)
+      const chunks = []
+      let size = 0
+      for await (const chunk of response.body) {
+        if ((size += chunk.length) > 128_000) fail('更新清单过大')
+        chunks.push(chunk)
+      }
+      const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const release = verifyFeed(envelope, source.publicKey, 'desktop')
+      // This release brings its own runtime; matching the running kernel would defeat migration.
+      if (!validVersion(release.electronVersion) || !satisfies(release.version, release.desktopRange)
+        || !satisfies(release.version, release.kernelRange) || !satisfies(release.nodeVersion, release.nodeRange)) {
+        fail('整包目标运行时元数据无效或不兼容')
+      }
+      this.latest.desktopUpgrade = release
+      if (semver.gt(release.version, this.desktop.version) || (semver.eq(release.version, this.desktop.version)
+        && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) {
+        this.candidates.desktopUpgrade = { release, envelope }
+      }
       return this.status()
     })
   }
@@ -392,6 +437,27 @@ export class UpdateManager {
     })
   }
 
+  /** Download authenticated bytes, then hand off to the real exit/backup worker; never relaunch here. */
+  async installWholeDesktopUpgrade(runtime, lifecycle) {
+    return this.exclusive(async () => {
+      if (this.state.pending) fail('请先完成内核重启，再升级整包桌面')
+      const { envelope } = this.candidates.desktopUpgrade ?? fail('请先检查整包桌面升级')
+      const publicKey = this.source('desktopUpgrade').publicKey
+      const release = verifyFeed(envelope, publicKey, 'desktop')
+      const directory = await fs.mkdtemp(join(this.root, '.whole-desktop-'))
+      try {
+        const archive = join(directory, 'desktop.tar.gz')
+        this.step('正在下载完整桌面并校验签名摘要')
+        await this.download(release.asset, archive)
+        const result = await startWholeDesktopUpgrade({ ...runtime, archive, envelope, publicKey }, {
+          ...lifecycle, onProgress: phase => { this.step(phase); lifecycle.onProgress?.(phase) },
+        })
+        if (result.kind === 'handed-off') this.wholeDesktopHandOff = result
+        return result
+      } finally { await fs.rm(directory, { recursive: true, force: true }) }
+    })
+  }
+
   async markHealthy() {
     if (this.state.pending === 'booting') { this.state.pending = null; await this.save() }
   }
@@ -403,7 +469,7 @@ export class UpdateManager {
     await this.save()
     this.selected = this.bundled
     if (this.state.active) {
-      const previous = await this.readKernel(this.state.active)
+      const previous = await this.readKernel(this.state.active, true)
       if (semver.gte(previous.version, this.bundled.version)) this.selected = previous
     }
     return true

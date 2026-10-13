@@ -15,9 +15,12 @@ for (const file of ['desktop.json', 'updates.json']) copyFileSync(join(root, fil
 for (const [entry, outfile] of [
   ['updates/core.mjs', 'build/update-core.mjs'],
   ['updates/user-install.mjs', 'build/user-install.mjs'],
+  ['updates/whole-desktop.mjs', 'build/whole-desktop.mjs'],
+  ['updates/migration-worker.mjs', 'build/migration-worker.mjs'],
   ['scripts/install-user.mjs', 'build/install-user.mjs'],
   ['updates/desktop.mjs', 'build/upstream/apps/desktop/lib/workbench.mjs'],
   ['updates/archive-worker.mjs', 'build/upstream/apps/desktop/lib/workbench-archive.mjs'],
+  ['updates/migration-worker.mjs', 'build/upstream/apps/desktop/lib/workbench-migration-worker.mjs'],
   ['scripts/release-updates.mjs', 'build/release-updates.mjs'],
 ]) {
   await build({ entryPoints: [join(root, entry)], outfile: join(root, outfile), bundle: true,
