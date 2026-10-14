@@ -39,6 +39,12 @@ export async function createWorkbenchUpdates(options) {
     extract,
   })
   await manager.boot()
+  const upgradeFailure = process.env.DSH_WHOLE_DESKTOP_FAILED
+  delete process.env.DSH_WHOLE_DESKTOP_FAILED
+  if (upgradeFailure) {
+    manager.notice = `完整桌面升级未完成，已恢复原版本：${upgradeFailure}`
+    dialog.showErrorBox('软件更新', `${manager.notice}\n\n请关闭占用 dsh 数据的其他程序后重试。`)
+  }
   const provisioning = new AbortController()
   app.on('before-quit', () => provisioning.abort())
   let window

@@ -358,15 +358,18 @@ export class UpdateManager {
     })
   }
 
-  async download(asset, destination) {
+  async download(asset, destination, label = '正在下载') {
+    this.step(label)
     // ponytail: ten-minute whole-transfer bound; use idle timeouts if slower links need support.
     const response = await this.response(asset.url, 600_000)
     const output = await fs.open(destination, 'wx', 0o600)
     const checksum = createHash('sha256')
+    const mib = bytes => (bytes / 1024 ** 2).toFixed(0)
     let size = 0
     try {
       for await (const chunk of response.body) {
         if ((size += chunk.length) > asset.size) fail('下载文件超过签名声明的大小')
+        this.progress = `${label}：${mib(size)} / ${mib(asset.size)} MiB（${Math.floor(size * 100 / asset.size)}%）`
         checksum.update(chunk)
         await output.writeFile(chunk)
       }
@@ -386,8 +389,7 @@ export class UpdateManager {
       const payload = join(staging, 'payload')
       try {
         await fs.mkdir(payload, { mode: 0o700 })
-        this.step('正在下载内核并校验摘要')
-        await this.download(release.asset, join(staging, 'kernel.tgz'))
+        await this.download(release.asset, join(staging, 'kernel.tgz'), '正在下载内核')
         this.step('正在检查归档并解包')
         await this.extract(join(staging, 'kernel.tgz'), payload)
         this.step('正在校验完整内核与配套运行时')
@@ -429,7 +431,8 @@ export class UpdateManager {
       try {
         const asset = release.asset
         const path = join(directory, 'desktop.tar.gz')
-        await this.download(asset, path)
+        await this.download(asset, path, '正在下载桌面更新')
+        this.step('正在校验并安装桌面更新')
         const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision, size: asset.size,
           sha256: asset.sha256, prepareRestart, restart })
         return result !== null
@@ -447,8 +450,8 @@ export class UpdateManager {
       const directory = await fs.mkdtemp(join(this.root, '.whole-desktop-'))
       try {
         const archive = join(directory, 'desktop.tar.gz')
-        this.step('正在下载完整桌面并校验签名摘要')
-        await this.download(release.asset, archive)
+        await this.download(release.asset, archive, '正在下载完整桌面')
+        this.step('正在解包并校验完整桌面')
         const result = await startWholeDesktopUpgrade({ ...runtime, archive, envelope, publicKey }, {
           ...lifecycle, onProgress: phase => { this.step(phase); lifecycle.onProgress?.(phase) },
         })

@@ -371,6 +371,7 @@ async function captureInstallation(transaction) {
 export async function runWholeDesktopMigration(path) {
   const transaction = await readTransaction(path)
   let activated = false
+  let parentExited = false
   try {
     if (!process.send || transaction.cleanStop !== true || !await originalAlive(transaction.parent)) fail('Worker requires the live original parent and a clean Host receipt')
     const owner = JSON.parse(await fs.readFile(join(backupRoot(transaction.home), '.migration-lock/owner.json'), 'utf8'))
@@ -388,6 +389,7 @@ export async function runWholeDesktopMigration(path) {
       if (Date.now() >= deadline) fail('Original Electron did not actually exit before the backup deadline')
       await new Promise(resolve => setTimeout(resolve, 50))
     }
+    parentExited = true
     const roots = [transaction.dshHome, transaction.userData, dirname(transaction.oldExecutable)]
     const names = ['dshHome', 'userData', 'desktop']
     const installation = await captureInstallation(transaction)
@@ -461,6 +463,11 @@ export async function runWholeDesktopMigration(path) {
         ? `Preserved snapshot; explicit whole-group restore: ${transaction.node} ${transaction.workerPath} restore ${path} EMPTY_HOME`
         : 'Cutover stopped before a verified snapshot; the old program and source data remain active. Review this report before retrying.' })
     if (!activated) await releaseGate(transaction)
+    if (!activated && parentExited) {
+      spawn(transaction.oldExecutable, [], { detached: true, stdio: 'ignore', env: { ...process.env,
+        HOME: transaction.home, DSH_HOME: transaction.dshHome, ELECTRON_RUN_AS_NODE: undefined,
+        DSH_WHOLE_DESKTOP_FAILED: error.message } }).on('error', () => {}).unref()
+    }
     throw error
   }
 }

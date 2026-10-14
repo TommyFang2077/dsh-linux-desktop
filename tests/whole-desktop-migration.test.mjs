@@ -59,7 +59,7 @@ async function fixture(t, { acknowledge = true, rootMismatch } = {}) {
         dshHome: ${rootMismatch === 'dshHome' ? 'process.env.HOME + "/unexpected-runtime-home"' : 'process.env.DSH_HOME'},
         userData: process.env.HOME + ${JSON.stringify(rootMismatch === 'userData' ? '/unexpected-runtime-userData' : '/.config/dsh-workbench')} });
       ${acknowledge ? `await markWholeDesktopHealthy({ home: process.env.HOME, version: ${JSON.stringify(version)}, executable: process.env.DSH_FIXTURE_EXECUTABLE });` : ''}
-      await fs.writeFile(process.env.HOME + '/new-started', 'started');`
+      await fs.writeFile(process.env.HOME + '/new-started', process.env.DSH_WHOLE_DESKTOP_FAILED ?? 'started');`
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
     const files = {
       'dsh-workbench': `#!/bin/sh\nif [ "$ELECTRON_RUN_AS_NODE" = 1 ]; then printf "44.5.1\\n"; exit 0; fi\nexport DSH_FIXTURE_EXECUTABLE="$0"\nexec ${quote(process.execPath)} --input-type=module -e ${quote(application)}\n`,
@@ -486,6 +486,13 @@ test('an unrelated process with a writable hard-link alias stops migration witho
     assert.match(status.error, /Data writer must be closed/)
     assert.equal(await fs.readlink(join(f.root, 'current')), `versions/${f.old.release.asset.sha256}`)
     assert.equal(await fs.readFile(join(f.dshHome, 'session.json'), 'utf8'), '{"epoch":"old","text":"saved"}')
+    const deadline = Date.now() + 10_000
+    let relaunched
+    while (!relaunched && Date.now() < deadline) {
+      relaunched = await fs.readFile(join(f.home, 'new-started'), 'utf8').catch(() => undefined)
+      await new Promise(resolve => setTimeout(resolve, 30))
+    }
+    assert.equal(relaunched, status.error, 'the untouched old desktop reopens and receives the failure')
   } finally {
     const exited = new Promise(resolve => writer.once('exit', resolve))
     writer.kill()

@@ -18,6 +18,7 @@ function render(status) {
   for (const button of document.querySelectorAll('button')) {
     button.disabled = working || status.busy || (button.dataset.action === 'install' && !channel)
   }
+  if (working && !status.busy) return
   document.getElementById('status').textContent = status.busy ? (status.progress || '正在下载并校验，请稍候…')
     : status.restartRequired ? '内核已准备好，等待重启。' : status.notice
 }
@@ -62,9 +63,9 @@ for (const button of document.querySelectorAll('button')) {
 }
 void run(check, '正在检查更新…')
 setInterval(async () => {
-  if (working) return
   try {
     const result = await window.workbenchUpdates.invoke('status')
-    if (!working) { last = result.status; render(last) }
+    if (working) render(result.status)
+    else { last = result.status; render(last) }
   } catch (error) { document.getElementById('error').textContent = error.message }
-}, 1500)
+}, 1000)
