@@ -73,8 +73,8 @@ class GitHub:
             headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read(4 * 1024 * 1024 + 1)
-            if len(raw) > 4 * 1024 * 1024:
+            raw = response.read(16 * 1024 * 1024 + 1)
+            if len(raw) > 16 * 1024 * 1024:
                 raise ValueError("GitHub response byte limit exceeded")
             return json.loads(raw)
 
