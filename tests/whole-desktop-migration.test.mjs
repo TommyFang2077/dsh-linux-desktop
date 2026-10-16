@@ -620,9 +620,10 @@ if (!isolated) {
   publicTest('whole desktop public integration scenarios use a real non-root process namespace', async () => {
     const environment = { ...process.env, DSH_WHOLE_DESKTOP_TEST_NAMESPACE: '1' }
     delete environment.NODE_TEST_CONTEXT
-    const result = await promisify(execFile)('unshare', ['--user', '--map-current-user', '--pid', '--fork', '--mount-proc',
+    // unshare --fork ignores SIGTERM, so the timeout must SIGKILL it and --kill-child tears down the namespace.
+    const result = await promisify(execFile)('unshare', ['--user', '--map-current-user', '--pid', '--fork', '--mount-proc', '--kill-child',
       process.execPath, '--test', new URL(import.meta.url).pathname], {
-      env: environment, timeout: 30_000, maxBuffer: 4 * 1024 ** 2,
+      env: environment, timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 ** 2,
     })
     assert.match(result.stdout, /production worker backs up complete data/)
     console.log(result.stdout.trim())
