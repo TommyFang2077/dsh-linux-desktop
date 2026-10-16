@@ -182,10 +182,11 @@ export async function atomicJson(path, value) {
 
 /** Separate channels share verification, never version state or installation destinations. */
 export class UpdateManager {
-  constructor({ root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract = extractKernel, fetch: transport = globalThis.fetch }) {
-    Object.assign(this, { root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract, fetch: transport })
+  constructor({ root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract = extractKernel, fetch: transport = globalThis.fetch, signal }) {
+    Object.assign(this, { root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract, fetch: transport, signal })
     this.candidates = {}
     this.latest = {}
+    this.downloaded = {}
     this.busy = false
     this.state = { schemaVersion: 1, active: null, previous: null, pending: null }
     this.selected = bundled
@@ -249,6 +250,7 @@ export class UpdateManager {
 
   status() {
     return {
+      downloaded: { ...this.downloaded },
       busy: this.busy, progress: this.progress ?? '', notice: this.notice, restartRequired: this.state.pending === 'staged',
       kernel: { version: this.selected.version, bundledVersion: this.bundled.version,
         available: this.candidates.kernel?.release.version ?? null, latest: this.latest.kernel?.version ?? null, configured: Boolean(this.config.kernel),
@@ -280,7 +282,8 @@ export class UpdateManager {
     let address = new URL(httpsUrl(url))
     const releasePath = /^\/([^/]+\/[^/]+)\/releases\/(?:latest\/download|download\/[^/]+)\/([^/]+)$/
     const github = address.host === 'github.com' && address.pathname.match(releasePath)
-    const signal = AbortSignal.timeout(timeout)
+    const deadline = AbortSignal.timeout(timeout)
+    const signal = this.signal ? AbortSignal.any([this.signal, deadline]) : deadline
     for (let redirects = 0; ; redirects++) {
       const manual = github && address.host === 'github.com'
       const response = await this.fetch(address.href, { redirect: manual ? 'manual' : 'error', signal })
@@ -303,6 +306,7 @@ export class UpdateManager {
   async check(channel) {
     return this.exclusive(async () => {
       delete this.candidates[channel]
+      delete this.downloaded[channel]
       this.latest = { ...this.latest, [channel]: undefined }
       const source = this.source(channel)
       const response = await this.response(source.url)
@@ -378,9 +382,70 @@ export class UpdateManager {
     } finally { await output.close() }
   }
 
+  validatedCandidate(channel) {
+    const candidate = this.candidates[channel] ?? fail('请先检查更新')
+    const release = verifyFeed(candidate.envelope, this.source(channel).publicKey, channel)
+    if (JSON.stringify(release) !== JSON.stringify(candidate.release)) fail('更新目标已改变，请重新检查')
+    if (release.dataEpoch !== this.desktop.dataEpoch) fail('数据格式不兼容，拒绝普通更新')
+    if (channel === 'kernel') checkCompatibility(release, this.desktop)
+    else {
+      checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
+        dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
+      if (!satisfies(this.selected.version, release.kernelRange)) fail('该桌面版本不支持当前内核')
+    }
+    const current = channel === 'kernel' ? this.selected.version : this.desktop.version
+    if (!semver.gt(release.version, current) && !(channel === 'desktop' && semver.eq(release.version, current)
+      && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) fail('更新目标已不再适用')
+    return { release, envelope: candidate.envelope }
+  }
+
+  async validArchive(path, asset) {
+    try {
+      const stat = await fs.lstat(path)
+      return stat.isFile() && !stat.isSymbolicLink() && stat.size === asset.size && await fileHash(path) === asset.sha256
+    } catch (error) { if (error.code === 'ENOENT') return false; throw error }
+  }
+
+  async cachedArchive(channel, asset) {
+    const directory = join(this.root, 'downloads')
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 })
+    const info = await fs.lstat(directory)
+    if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077)) fail('下载缓存必须为私有目录')
+    const path = join(directory, `${channel}-${asset.sha256}.tgz`)
+    if (!await this.validArchive(path, asset)) {
+      delete this.downloaded[channel]
+      const temporary = join(directory, `.download-${randomUUID()}`)
+      try {
+        await this.download(asset, temporary)
+        await fs.rename(temporary, path)
+      } finally { await fs.rm(temporary, { force: true }) }
+    }
+    this.downloaded[channel] = asset.sha256
+    for (const name of await fs.readdir(directory)) {
+      if (name.startsWith(`${channel}-`) && /^[a-z]+-[a-f0-9]{64}\.tgz$/.test(name) && name !== `${channel}-${asset.sha256}.tgz`) {
+        await fs.rm(join(directory, name), { force: true })
+      }
+    }
+    return path
+  }
+
+  async prepareDownload(channel) {
+    return this.exclusive(async () => {
+      const { release } = this.validatedCandidate(channel)
+      await this.cachedArchive(channel, release.asset)
+      return this.status()
+    })
+  }
+
+  async stageArchive(channel, asset, destination) {
+    const cached = await this.cachedArchive(channel, asset)
+    await fs.copyFile(cached, destination)
+    if (!await this.validArchive(destination, asset)) fail('下载缓存已改变，请重新下载')
+  }
+
   async installKernel(prepareRestart, restart) {
     return this.exclusive(async () => {
-      const candidate = this.candidates.kernel ?? fail('请先检查内核更新')
+      const candidate = this.validatedCandidate('kernel')
       if (this.state.pending) fail('请先重启以完成待激活内核')
       const { release, envelope } = candidate
       checkCompatibility(release, this.desktop)
@@ -389,7 +454,7 @@ export class UpdateManager {
       const payload = join(staging, 'payload')
       try {
         await fs.mkdir(payload, { mode: 0o700 })
-        await this.download(release.asset, join(staging, 'kernel.tgz'), '正在下载内核')
+        await this.stageArchive('kernel', release.asset, join(staging, 'kernel.tgz'))
         this.step('正在检查归档并解包')
         await this.extract(join(staging, 'kernel.tgz'), payload)
         this.step('正在校验完整内核与配套运行时')
@@ -424,14 +489,14 @@ export class UpdateManager {
   async installDesktop(prepareRestart, install, restart) {
     return this.exclusive(async () => {
       if (this.state.pending) fail('请先完成内核重启，再更新桌面端')
-      const { release } = this.candidates.desktop ?? fail('请先检查桌面更新')
+      const { release } = this.validatedCandidate('desktop')
       checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
         dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
       const directory = await fs.mkdtemp(join(this.root, '.desktop-'))
       try {
         const asset = release.asset
         const path = join(directory, 'desktop.tar.gz')
-        await this.download(asset, path, '正在下载桌面更新')
+        await this.stageArchive('desktop', asset, path)
         this.step('正在校验并安装桌面更新')
         const result = await install({ archive: path, version: release.version, linuxRevision: release.linuxRevision, size: asset.size,
           sha256: asset.sha256, prepareRestart, restart })

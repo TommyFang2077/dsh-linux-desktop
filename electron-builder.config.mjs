@@ -1,5 +1,5 @@
-import { chmodSync, lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { join, relative, resolve } from 'node:path'
 import { createElectronBuilderConfig } from './build/upstream/apps/desktop/scripts/electron-builder-config.mjs'
 
 const root = import.meta.dirname
@@ -20,6 +20,52 @@ export function hardenPermissions(directory) {
     chmodSync(path, ((stat.mode & 0o777) | (stat.isDirectory() ? 0o700 : 0o600)) & ~0o022)
     if (lstatSync(path).mode & 0o022) throw new Error('Packaging requires a filesystem with Unix permissions')
   }
+}
+
+/** Materialize only the locked Linux Python aliases in the final deployment copy. */
+export function materializePythonAliases(directory) {
+  directory = resolve(directory)
+  if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) {
+    throw new Error('Desktop staging must be a physical directory')
+  }
+  const bin = join(directory, 'resources/runtime/primary-runtime/dependencies/python/bin')
+  const interpreter = 'python3.12'
+  const aliases = ['python', 'python3'].map(name => join(bin, name))
+  const pending = [directory]
+  while (pending.length) {
+    for (const entry of readdirSync(pending.pop(), { withFileTypes: true })) {
+      const path = join(entry.parentPath, entry.name)
+      if (entry.isSymbolicLink()) {
+        if (!aliases.includes(path)) throw new Error('Desktop staging contains an unsupported symbolic link: ' + relative(directory, path))
+      } else if (entry.isDirectory()) pending.push(path)
+      else if (!entry.isFile()) throw new Error('Desktop staging contains a special file: ' + relative(directory, path))
+    }
+  }
+  const fd = openSync(join(bin, interpreter), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  let bytes, mode
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || !(stat.mode & 0o111)) throw new Error('Desktop Python interpreter must be an executable regular file')
+    bytes = readFileSync(fd)
+    mode = stat.mode & 0o777
+  } finally { closeSync(fd) }
+  for (const path of aliases) {
+    const stat = lstatSync(path)
+    if (stat.isSymbolicLink()) {
+      if (readlinkSync(path) !== interpreter) throw new Error('Desktop Python alias must point directly to ' + interpreter)
+    } else if (!stat.isFile() || !readFileSync(path).equals(bytes)) {
+      throw new Error('Desktop Python alias does not match its interpreter')
+    }
+  }
+  const temporary = mkdtempSync(join(bin, '.workbench-python-'))
+  try {
+    for (const path of aliases) {
+      const file = join(temporary, relative(bin, path))
+      writeFileSync(file, bytes, { flag: 'wx', mode })
+      chmodSync(file, mode)
+    }
+    for (const path of aliases) renameSync(join(temporary, relative(bin, path)), path)
+  } finally { rmSync(temporary, { recursive: true, force: true }) }
 }
 
 const config = createElectronBuilderConfig({
@@ -51,6 +97,7 @@ export default {
     try { migrationWorker = readFileSync(join(context.appOutDir, 'resources/app/lib/workbench-migration-worker.mjs')) }
     catch (error) { throw new Error('Desktop staging is missing its standalone migration worker', { cause: error }) }
     if (!migrationWorker.length) throw new Error('Desktop staging contains an empty migration worker')
+    materializePythonAliases(context.appOutDir)
     hardenPermissions(context.appOutDir)
   },
   protocols: [],

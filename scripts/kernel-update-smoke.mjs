@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
+import { once } from 'node:events'
 import { createReadStream } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import { createServer } from 'node:https'
@@ -11,6 +12,36 @@ import { setTimeout } from 'node:timers/promises'
 import { fileHash, inventory } from '../build/update-core.mjs'
 import { installUserDesktop } from '../build/user-install.mjs'
 import { writeDesktopRuntime } from '../build/upstream/apps/desktop/lib/types/runtime-tree.js'
+
+async function waitForUpdateIdle(page, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await page.evaluate(() => window.workbenchUpdates.invoke('status'))
+    assert.equal(result.error, undefined)
+    assert.equal(typeof result.status?.busy, 'boolean', 'Main must report a known busy state')
+    if (!result.status.busy && !await page.locator('[data-action="check"]').isDisabled()) return result
+    await setTimeout(100)
+  }
+  throw new Error('Update operations did not become idle within ' + timeoutMs + 'ms')
+}
+
+function holdUpdateConfirmation({ app, dialog }) {
+  const state = globalThis.__workbenchSmokeConfirmation = { calls: 0, relaunches: 0, settled: false, options: null }
+  dialog.showMessageBox = (_window, options) => {
+    state.calls++
+    if (state.calls !== 1) throw new Error('Unexpected repeated update confirmation')
+    state.options = options
+    return new Promise(resolve => {
+      state.respond = response => {
+        if (state.settled || ![0, 1].includes(response)) throw new Error('Confirmation must be explicit and occur once')
+        state.settled = true
+        resolve({ response, checkboxChecked: false })
+      }
+    })
+  }
+  app.relaunch = () => { state.relaunches++ }
+  return app.getPath('userData')
+}
 
 const root = resolve(import.meta.dirname, '..')
 const require = createRequire(join(root, 'build/upstream/package.json'))
@@ -104,39 +135,74 @@ try {
   application.process().stdout.on('data', bytes => process.stdout.write(bytes))
   application.process().on('exit', (code, signal) => console.log('Desktop process exit:', code, signal))
   const updates = await enter()
+  const idle = await waitForUpdateIdle(updates)
+  assert.equal(idle.status.kernel.configured, true)
+  if (idle.status.kernel.available !== null) assert.equal(idle.status.kernel.available, version)
+  if (idle.status.downloaded.kernel) assert.equal(idle.status.downloaded.kernel, await fileHash(archive))
   const checked = await updates.evaluate(() => window.workbenchUpdates.invoke('check', 'kernel'))
   assert.equal(checked.error, undefined)
   assert.equal(checked.status.kernel.available, version)
   console.log('Signed HTTPS feed accepted; downloading and probing candidate')
-  const data = await application.evaluate(({ app, dialog }) => {
-    // Mock only human confirmation and relaunch: restart is driven by this test after a clean exit.
-    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false })
-    app.relaunch = () => {}
-    return app.getPath('userData')
-  })
+  const data = await application.evaluate(holdUpdateConfirmation)
+  if (idle.status.downloaded.kernel) {
+    const asset = JSON.parse(payload.toString()).asset
+    const cache = join(data, 'updates/downloads', 'kernel-' + asset.sha256 + '.tgz')
+    assert.equal((await fs.stat(cache)).size, asset.size)
+    assert.equal(await fileHash(cache), asset.sha256, 'Automatically verified cache must still match the signed asset')
+  }
+  const statePath = join(data, 'updates/state.json')
+  const readState = async () => {
+    try { return JSON.parse(await fs.readFile(statePath, 'utf8')) }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error }
+  }
+  const beforeInstall = await readState()
+  const confirmationDeadline = Date.now() + 180_000
   let operationResult
   const updateOperation = updates.evaluate(() => window.workbenchUpdates.invoke('install', 'kernel'))
     .catch(error => ({ closed: true, message: error.message }))
     .then(result => { operationResult = result; return result })
-  let confirmation
-  for (let attempt = 0; attempt < 1800 && !confirmation; attempt++) {
+  let consent
+  while (Date.now() < confirmationDeadline && !consent?.options) {
     if (operationResult?.error) throw new Error(operationResult.error)
-    if (operationResult?.closed) throw new Error(`Application closed before confirmation: ${operationResult.message}`)
-    for (const page of application.windows()) {
-      if (page === updates) continue
-      const button = page.getByRole('button', { name: /^(安装并重启|Install and Restart)$/ })
-      if (await button.isVisible().catch(() => false)) { confirmation = button; break }
-    }
-    if (!confirmation) await setTimeout(100)
+    if (operationResult?.closed) throw new Error('Application closed before explicit confirmation')
+    consent = await application.evaluate(() => {
+      const { calls, relaunches, settled, options } = globalThis.__workbenchSmokeConfirmation
+      return { calls, relaunches, settled, options }
+    })
+    if (!consent.options) await setTimeout(100)
   }
-  assert.ok(confirmation, 'Candidate must pass the real isolated Host probe before asking to restart')
-  const exited = application.waitForEvent('close')
-  await confirmation.click()
-  await Promise.race([exited, setTimeout(60_000, undefined, { ref: false }).then(() => { throw new Error('Updater did not exit after clean stop') })])
+  assert.ok(consent?.options, 'Install must wait for a real native consent dialog')
+  assert.equal(consent.calls, 1)
+  assert.equal(consent.relaunches, 0)
+  assert.equal(consent.settled, false)
+  assert.equal(consent.options.title, '确认更新')
+  assert.equal(consent.options.message, '更新内核至 ' + version + '？')
+  assert.deepEqual(consent.options.buttons, ['取消', '继续'])
+  assert.equal(consent.options.defaultId, 0)
+  assert.equal(consent.options.cancelId, 0)
+  assert.match(consent.options.detail, /下载并校验/)
+  assert.deepEqual(await readState(), beforeInstall, 'No installation state may change before consent')
+  assert.equal(application.process().exitCode, null, 'No restart may precede consent')
+  const held = await updates.evaluate(() => window.workbenchUpdates.invoke('status'))
+  assert.equal(held.status.busy, true)
+  assert.equal(held.status.kernel.version, idle.status.kernel.version)
+  await updates.waitForFunction(() => [...document.querySelectorAll('button')].every(button => button.disabled), null, { timeout: 5_000 })
+  for (const name of ['检查更新', '确认安装并重启']) assert.equal(await updates.getByRole('button', { name, exact: true }).isDisabled(), true)
+  const busy = await updates.evaluate(() => window.workbenchUpdates.invoke('check', 'kernel'))
+  assert.match(busy.error, /已有更新操作或确认对话框正在进行/)
+  const exited = Promise.all([application.waitForEvent('close'), once(application.process(), 'exit')])
+  await application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))
+  const [, [exitCode, signal]] = await Promise.race([
+    exited,
+    setTimeout(Math.min(60_000, Math.max(1, confirmationDeadline - Date.now())), undefined, { ref: false })
+      .then(() => { throw new Error('Updater did not exit after clean stop') }),
+  ])
+  assert.equal(exitCode, 0)
+  assert.equal(signal, null)
   await updateOperation
   application = undefined
-  const statePath = join(data, 'updates/state.json')
-  assert.equal(JSON.parse(await fs.readFile(statePath, 'utf8')).pending, 'staged')
+  assert.equal(JSON.parse(await fs.readFile(statePath, 'utf8')).pending, 'staged',
+    'Candidate must pass the real isolated Host probe and clean stop before staging')
   application = await launch()
   const after = await enter()
   const selected = await after.evaluate(() => window.workbenchUpdates.invoke('status'))

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
-  "commit": "d743267388641bc76f17c45ce8b4c231aed1d32c",
-  "version": "0.2.1-alpha.2",
+  "commit": "86a402200d95fecef4529d969836f1fe13c6cb0d",
+  "version": "0.2.1-alpha.4",
   "pnpm": "11.28.5"
 }

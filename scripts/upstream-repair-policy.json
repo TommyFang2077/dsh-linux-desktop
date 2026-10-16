@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "semanticPaths": [
+    "apps/desktop/scripts/desktop-build-paths.mjs",
+    "apps/desktop/scripts/electron-builder-config.mjs"
+  ]
+}

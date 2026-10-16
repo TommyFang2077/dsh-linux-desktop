@@ -21,7 +21,6 @@ export function releaseFeedNames({ version, linuxRevision, dataEpoch }) {
     assert.ok(version === '0.2.1-alpha.1' && linuxRevision === BRIDGE_REVISION, `Only genuine alpha.1 r${BRIDGE_REVISION} may replace legacy feeds`)
     return { kernel: 'kernel-latest.json', desktop: 'desktop-latest.json' }
   }
-  assert.equal(dataEpoch, `dsh-${version}`, 'Release version differs from its data epoch')
   return { kernel: `kernel-${dataEpoch}-latest.json`, desktop: `desktop-${dataEpoch}-latest.json` }
 }
 

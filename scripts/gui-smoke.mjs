@@ -8,6 +8,18 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
+async function waitForUpdateIdle(page, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await page.evaluate(() => window.workbenchUpdates.invoke('status'))
+    assert.equal(result.error, undefined)
+    assert.equal(typeof result.status?.busy, 'boolean', 'Main must report a known busy state')
+    if (!result.status.busy && !await page.locator('[data-action="check"]').isDisabled()) return result
+    await setTimeout(100)
+  }
+  throw new Error('Update operations did not become idle within ' + timeoutMs + 'ms')
+}
+
 /** Opt-in: requires the real session watcher, not just a constructed Electron Tray. */
 async function verifyTrayRegistration(pid) {
   const service = `org.freedesktop.StatusNotifierItem-${pid}-1`
@@ -172,15 +184,24 @@ try {
     if (!updates) await setTimeout(100)
   }
   assert.ok(updates, 'The independent updates window must open from the trusted desktop bridge')
-  await updates.getByRole('heading', { name: 'dsh 内核' }).waitFor({ state: 'visible' })
-  await updates.getByRole('heading', { name: '桌面端', exact: true }).waitFor({ state: 'visible' })
-  const state = await updates.evaluate(() => window.workbenchUpdates.invoke('status'))
+  await updates.getByRole('heading', { name: '软件更新', exact: true }).waitFor({ state: 'visible' })
+  const state = await waitForUpdateIdle(updates)
   assert.equal(state.status.desktop.version, version)
+  assert.equal(state.status.desktop.linuxRevision, linuxRevision)
   assert.equal(state.status.kernel.version, JSON.parse(readFileSync(join(root, 'upstream.json'), 'utf8')).version)
-  assert.equal(state.status.kernel.configured, false)
-  assert.equal(state.status.desktop.configured, false)
-  const unconfigured = await updates.evaluate(() => window.workbenchUpdates.invoke('check', 'kernel'))
-  assert.match(unconfigured.error, /未配置/)
+  await updates.getByText('当前版本：' + version + ' · Linux r' + linuxRevision, { exact: true }).waitFor({ state: 'visible' })
+  const checkButton = updates.getByRole('button', { name: '检查更新', exact: true })
+  const installButton = updates.getByRole('button', { name: '确认安装并重启', exact: true })
+  assert.equal(await checkButton.isDisabled(), false)
+  assert.equal(await installButton.isDisabled(), true, 'No verified candidate may be installed')
+  for (const channel of ['desktop', 'desktopUpgrade', 'kernel']) {
+    assert.equal(state.status[channel].configured, false)
+    assert.equal(state.status[channel].available, null)
+    await waitForUpdateIdle(updates)
+    const unconfigured = await updates.evaluate(channel => window.workbenchUpdates.invoke('check', channel), channel)
+    assert.match(unconfigured.error, /未配置/)
+  }
+  await waitForUpdateIdle(updates)
   const invalid = await updates.evaluate(() => window.workbenchUpdates.invoke('install', 'shell'))
   assert.match(invalid.error, /未知更新通道/)
   await updates.screenshot({ path: join(root, 'build/updates-smoke.png') })

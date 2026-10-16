@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -50,7 +51,17 @@ def apply_patch(source, patch):
     run("git", "apply", patch, cwd=source)
 
 
+def validate_source_lock(lock):
+    if lock.get("repository") != "https://github.com/deepseek-ai/deepseek-harness.git":
+        raise RuntimeError("Only the official upstream repository is permitted")
+    if not re.fullmatch(r"[0-9a-f]{40}", lock.get("commit", "")):
+        raise RuntimeError("Upstream commit must be an exact SHA")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", lock.get("pnpm", "")):
+        raise RuntimeError("Upstream pnpm must be exactly pinned")
+
+
 def prepare():
+    validate_source_lock(LOCK)
     if not SOURCE.exists():
         SOURCE.parent.mkdir(parents=True, exist_ok=True)
         run("git", "init", "--initial-branch=upstream", SOURCE, cwd=ROOT)

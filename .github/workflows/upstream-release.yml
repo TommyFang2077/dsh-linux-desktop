@@ -1,0 +1,224 @@
+name: Follow official DeepSeek Harness Releases
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: upstream-release-automation
+  cancel-in-progress: false
+jobs:
+  discover:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      candidate: ${{ steps.plan.outputs.candidate }}
+      eligible: ${{ steps.plan.outputs.eligible }}
+      head: ${{ steps.plan.outputs.head }}
+      base: ${{ steps.plan.outputs.base }}
+      pr: ${{ steps.plan.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - id: plan
+        name: Discover published releases and open a deduplicated PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MODE: discover
+        run: python3 scripts/upstream-release.py
+  test:
+    needs: [discover, probe]
+    if: needs.discover.outputs.candidate == 'true' && needs.probe.outputs.conflict == 'false' && needs.probe.outputs.already != 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-updates.yml
+    with:
+      source_sha: ${{ needs.discover.outputs.head }}
+      unreviewed: true
+  promote:
+    needs: [discover, test]
+    if: needs.test.result == 'success' && needs.discover.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+      tag: ${{ steps.merge.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - id: merge
+        name: Revalidate trusted policy and exact tested tree before merging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MODE: promote
+          BASE_SHA: ${{ needs.discover.outputs.base }}
+          HEAD_SHA: ${{ needs.discover.outputs.head }}
+          PR_NUMBER: ${{ needs.discover.outputs.pr }}
+        run: python3 scripts/upstream-release.py
+  publish:
+    needs: [discover, test, promote]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-updates.yml
+    with:
+      source_sha: ${{ needs.promote.outputs.sha }}
+      release_tag: ${{ needs.promote.outputs.tag }}
+      artifact: ${{ needs.test.outputs.artifact }}
+    secrets:
+      signing_key: ${{ secrets.DSH_WORKBENCH_UPDATE_SIGNING_KEY }}
+  probe:
+    needs: discover
+    if: needs.discover.outputs.candidate == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      conflict: ${{ steps.probe.outputs.conflict }}
+      already: ${{ steps.probe.outputs.already }}
+      enabled: ${{ steps.probe.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: probe
+          BASE_SHA: ${{ needs.discover.outputs.base }}
+          HEAD_SHA: ${{ needs.discover.outputs.head }}
+        run: python3 scripts/upstream-repair.py
+      - uses: actions/upload-artifact@v4
+        if: steps.probe.outputs.conflict == 'true'
+        with:
+          name: repair-context
+          path: repair-context/context.json
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+  repair:
+    needs: [discover, probe]
+    if: needs.probe.outputs.conflict == 'true' && needs.probe.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-context
+          path: repair-context
+      - name: Request one bounded data-only model suggestion
+        env:
+          MODE: repair
+          AI_REPAIR_API_KEY: ${{ secrets.UPSTREAM_REPAIR_API_KEY }}
+        run: python3 scripts/upstream-repair.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repair-candidate
+          path: repair-candidate/repair.json
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+  validate-repair:
+    needs: [discover, repair]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-candidate
+          path: repair-candidate
+      - name: Validate artifact envelope and exact patch against official source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: validate
+          BASE_SHA: ${{ needs.discover.outputs.base }}
+          HEAD_SHA: ${{ needs.discover.outputs.head }}
+        run: python3 scripts/upstream-repair.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repair-validated
+          path: repair-validated/repair.json
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+  submit-repair:
+    needs: [discover, validate-repair]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    outputs:
+      head: ${{ steps.submit.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-validated
+          path: repair-validated
+      - id: submit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: submit
+          BASE_SHA: ${{ needs.discover.outputs.base }}
+          HEAD_SHA: ${{ needs.discover.outputs.head }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 scripts/upstream-repair.py
+      - uses: actions/upload-artifact@v4
+        id: provenance
+        with:
+          name: ai-provenance-${{ steps.submit.outputs.head }}
+          path: repair-provenance/provenance.json
+          retention-days: 30
+          if-no-files-found: error
+          overwrite: false
+      - name: Record immutable artifact identity outside candidate control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: record-provenance
+          BASE_SHA: ${{ needs.discover.outputs.base }}
+          HEAD_SHA: ${{ steps.submit.outputs.head }}
+          ARTIFACT_ID: ${{ steps.provenance.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.provenance.outputs.artifact-digest }}
+        run: python3 scripts/upstream-repair.py
+  test-repair:
+    needs: submit-repair
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-updates.yml
+    with:
+      source_sha: ${{ needs.submit-repair.outputs.head }}
+      unreviewed: true

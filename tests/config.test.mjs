@@ -1,3 +1,4 @@
+import { confirmUpdate } from '../updates/automatic.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -5,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { stripTypeScriptTypes } from 'node:module'
-import config, { hardenPermissions } from '../electron-builder.config.mjs'
+import config, { hardenPermissions, materializePythonAliases } from '../electron-builder.config.mjs'
 import { desktopTargetPlatform, resolveDesktopBuildTarget } from '../build/upstream/apps/desktop/scripts/desktop-build-paths.mjs'
 
 test('Linux x64 stages an unpacked desktop and keeps its independent identity', () => {
@@ -30,19 +31,24 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
   assert.deepEqual(config.protocols, [])
 })
 
-test('alpha.2 declares its data boundary independently of the unchanged Host wire protocol', () => {
+test('alpha.4 isolates its data boundary from legacy feeds independently of protocol metadata', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
-  assert.equal(desktop.version, '0.2.1-alpha.2')
-  assert.equal(desktop.linuxRevision, 3, 'Changed alpha.2 packages need an identity distinct from the published r1 and r2 assets')
-  assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.2')
+  const feeds = JSON.parse(readFileSync(new URL('../updates.json', import.meta.url), 'utf8'))
+  assert.equal(desktop.version, '0.2.1-alpha.4')
+  assert.equal(desktop.linuxRevision, 1)
+  assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.4')
   assert.equal(desktop.protocol, 4)
-  assert.equal(desktop.desktopRange, '>=0.2.1-alpha.2 <0.3.0')
-  assert.equal(desktop.kernelRange, '>=0.2.1-alpha.2 <0.3.0')
+  assert.equal(desktop.desktopRange, '>=0.2.1-alpha.4 <0.3.0')
+  assert.equal(desktop.kernelRange, '>=0.2.1-alpha.4 <0.3.0')
+  for (const channel of ['kernel', 'desktop']) {
+    assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), channel + '-dsh-0.2.1-alpha.4-latest.json')
+  }
+  assert.equal(new URL(feeds.desktopUpgrade.url).pathname.split('/').at(-1), 'desktop-dsh-0.2.1-alpha.2-latest.json')
 })
 
 test('Linux pins the tested Electron runtime without changing the official shell version', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
-  assert.equal(desktop.electronVersion, '44.5.1')
+  assert.equal(desktop.electronVersion, '44.7.0')
   assert.equal(config.electronVersion, desktop.electronVersion)
   const prepare = readFileSync(new URL('../build/upstream/apps/desktop/scripts/prepare-runtime.ts', import.meta.url), 'utf8')
   const start = prepare.indexOf('  const { version: packageVersion }')
@@ -249,6 +255,7 @@ test('settings version IPC validates its sender and boolean request and isolates
   const context = {
     performing: false,
     config: {},
+    status: () => context.manager.status(),
     ipcMain: { handle: (name, handler) => { assert.equal(name, 'dsh-workbench:versions'); invoke = handler } },
     options: { trustedSender: event => event.trusted === true },
     manager: { check: async channel => { checked.push(channel); if (channel === 'kernel') throw new Error('HTTP 404') },
@@ -300,11 +307,15 @@ test('afterPack removes the default ASAR before all artifact formats and rejects
   for (const file of ['desktop.json', 'updates.json']) writeFileSync(join(workbench, file), '{}')
   mkdirSync(join(appOutDir, 'resources/app/lib'))
   writeFileSync(join(appOutDir, 'resources/app/lib/workbench-migration-worker.mjs'), 'export const fixture = true')
+  const python = join(appOutDir, 'resources/runtime/primary-runtime/dependencies/python/bin')
+  mkdirSync(python, { recursive: true })
+  writeFileSync(join(python, 'python3.12'), 'interpreter fixture', { mode: 0o755 })
+  for (const alias of ['python', 'python3']) symlinkSync('python3.12', join(python, alias))
   const defaultAsar = join(appOutDir, 'resources/default_app.asar')
   writeFileSync(defaultAsar, 'default app')
   let verified = false
   const afterPack = runInNewContext(`(${config.afterPack.toString()})`, {
-    config: { afterPack: async () => { verified = true } }, join, rmSync, readdirSync, readFileSync, hardenPermissions,
+    config: { afterPack: async () => { verified = true } }, join, rmSync, readdirSync, readFileSync, hardenPermissions, materializePythonAliases,
   })
   await afterPack({ appOutDir })
   assert.equal(verified, true)
@@ -321,11 +332,13 @@ test('updater quits only after installer cleanup has completed and does not quit
   let invoke, cleaned = false, scheduled = 0, quits = 0, accepted = true
   const contents = { mainFrame: { url: 'file:///updates.html' } }
   const context = {
+    status: () => context.manager.status(), confirmUpdate,
     ipcMain: { handle: (_name, handler) => { invoke = handler } },
     window: { webContents: contents }, url: contents.mainFrame.url, performing: false,
     dialog: { showMessageBox: async () => ({ response: 1 }) },
     userDesktop: { root: '/managed/home' }, extract: () => {},
-    manager: { busy: false, status: () => ({ desktop: { available: '1.2.0', availableLinuxRevision: 5 } }),
+    manager: { busy: false, candidates: { desktop: { release: { version: '1.2.0', linuxRevision: 5 } } },
+      check: async () => {}, prepareDownload: async () => {}, status: () => ({ desktop: { available: '1.2.0', availableLinuxRevision: 5 } }),
       installDesktop: async (_prepare, install, restart) => {
         if (!accepted) return false
         await install({ restart })
@@ -334,7 +347,7 @@ test('updater quits only after installer cleanup has completed and does not quit
         return true
       } },
     installUserDesktop: async artifact => { await artifact.restart('/managed/new'); return { executable: '/managed/new' } },
-    options: { prepareRestart: async () => true, restart: () => { scheduled++ },
+    options: { inspectTasks: async () => false, prepareRestart: async () => true, restart: () => { scheduled++ },
       finishRestart: () => { assert.equal(cleaned, true); quits++ }, recover: () => assert.fail('Unexpected recovery') },
   }
   runInNewContext(source.slice(start, end), context)

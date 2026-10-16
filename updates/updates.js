@@ -20,7 +20,9 @@ function render(status) {
   }
   if (working && !status.busy) return
   document.getElementById('status').textContent = status.busy ? (status.progress || '正在下载并校验，请稍候…')
-    : status.restartRequired ? '内核已准备好，等待重启。' : status.notice
+    : status.restartRequired ? '内核已准备好，等待重启。'
+      : channel && status.downloaded?.[channel] ? '更新已下载并校验，确认后安装并重启；活动任务期间暂缓。'
+        : status.notice || (Object.keys(status.automatic?.errors ?? {}).length ? '后台检查失败，将自动重试；也可手动检查。' : '启动时及每 6 小时自动检查并下载，安装前会征求确认。')
 }
 
 async function call(action, channel) {
@@ -61,7 +63,10 @@ for (const button of document.querySelectorAll('button')) {
   button.addEventListener('click', () => button.dataset.action === 'install'
     ? run(install, '处理中，下载和校验可能需要几分钟…') : run(check, '正在检查更新…'))
 }
-void run(check, '正在检查更新…')
+void run(async () => {
+  await call('status')
+  if (!last.busy) await check()
+}, '正在读取更新状态…')
 setInterval(async () => {
   try {
     const result = await window.workbenchUpdates.invoke('status')

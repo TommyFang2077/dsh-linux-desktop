@@ -1,17 +1,15 @@
 diff --git a/apps/desktop/scripts/desktop-build-paths.d.mts b/apps/desktop/scripts/desktop-build-paths.d.mts
-index 9a8e408e..27f8a735 100644
 --- a/apps/desktop/scripts/desktop-build-paths.d.mts
 +++ b/apps/desktop/scripts/desktop-build-paths.d.mts
-@@ -1,5 +1,8 @@
+@@ -1,4 +1,7 @@
  import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
- 
++
 +/** A release or downstream Linux desktop build target. */
 +export type DesktopBuildTarget = DesktopAutoUpdateTarget | 'linux-x64'
-+
+ 
  /** Mutable target directories plus the shared immutable download cache. */
  export interface DesktopTargetBuildPaths {
-   readonly root: string
-@@ -27,14 +30,14 @@ export function resolveDesktopBuildTarget(
+@@ -28,14 +31,14 @@
    env?: NodeJS.ProcessEnv,
    hostPlatform?: NodeJS.Platform,
    hostArch?: string,
@@ -28,7 +26,7 @@ index 9a8e408e..27f8a735 100644
  
  /**
   * Return the platform and architecture of the payload one release target prepares.
-@@ -42,8 +45,8 @@ export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): Deskto
+@@ -43,8 +46,8 @@
   * @param target - Supported Desktop target name.
   * @returns Platform and architecture of the prepared payload.
   */
@@ -40,10 +38,9 @@ index 9a8e408e..27f8a735 100644
  }
  
 diff --git a/apps/desktop/scripts/desktop-build-paths.mjs b/apps/desktop/scripts/desktop-build-paths.mjs
-index 4f33e804..d44bf0f3 100644
 --- a/apps/desktop/scripts/desktop-build-paths.mjs
 +++ b/apps/desktop/scripts/desktop-build-paths.mjs
-@@ -4,14 +4,14 @@ import { join, resolve } from 'node:path'
+@@ -4,14 +4,14 @@
  
  const APP_ROOT = resolve(import.meta.dirname, '..')
  const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
@@ -60,7 +57,7 @@ index 4f33e804..d44bf0f3 100644
   */
  export function resolveDesktopBuildTarget(
    env = process.env,
-@@ -26,7 +26,7 @@ export function resolveDesktopBuildTarget(
+@@ -26,7 +26,7 @@
    if (!SUPPORTED_TARGETS.has(target)) {
      throw new Error(`desktop build paths: unsupported target ${target}`)
    }
@@ -69,16 +66,16 @@ index 4f33e804..d44bf0f3 100644
  }
  
  function assertSupportedTarget(target) {
-@@ -37,7 +37,7 @@ function assertSupportedTarget(target) {
+@@ -37,7 +37,7 @@
  
  /**
   * Return the mutable preparation and artifact directories owned by one release target.
 - * @param {'mac-arm64' | 'mac-x64' | 'win-x64'} target - Supported Desktop target name.
 + * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-x64'} target - Supported Desktop target name.
-  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
+  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
   */
  export function desktopTargetBuildPaths(target) {
-@@ -63,13 +63,13 @@ export function desktopTargetBuildPaths(target) {
+@@ -64,13 +64,13 @@
  /**
   * Return the platform and architecture of the payload one release target prepares.
   * Windows is prepared as x64 only, so this differs from the build host on an arm64 Windows machine.
@@ -96,10 +93,9 @@ index 4f33e804..d44bf0f3 100644
    }
  }
 diff --git a/apps/desktop/scripts/development-project.ts b/apps/desktop/scripts/development-project.ts
-index d544ce6d..9a6b2a53 100644
 --- a/apps/desktop/scripts/development-project.ts
 +++ b/apps/desktop/scripts/development-project.ts
-@@ -16,8 +16,7 @@ import { dirname, join } from 'node:path'
+@@ -16,8 +16,7 @@
  import { createDevelopmentProjectMetadata } from '../src/project-manager.ts'
  import type { DesktopRelease } from '../src/release.ts'
  import { DESKTOP_RUNTIME_FILE, type DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
@@ -109,7 +105,7 @@ index d544ce6d..9a6b2a53 100644
  
  interface PackageManifest {
    readonly name?: string
-@@ -38,7 +37,7 @@ export interface DevelopmentProjectOptions {
+@@ -38,7 +37,7 @@
    /** Release identity written into the disposable project metadata. */
    readonly release: DesktopRelease
    /** Build target whose prepared payload the disposable project runs against. */
@@ -119,11 +115,10 @@ index d544ce6d..9a6b2a53 100644
  
  function readManifest(path: string): PackageManifest {
 diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
-index f08b7838..60a50c67 100644
 --- a/apps/desktop/scripts/electron-builder-config.mjs
 +++ b/apps/desktop/scripts/electron-builder-config.mjs
-@@ -60,7 +60,8 @@ export function createElectronBuilderConfig(
-   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
+@@ -65,7 +65,8 @@
+   if (skipNotarization && (unsigned || resolvedPlatform !== 'darwin')) throw new Error('Skipping notarization requires a signed macOS build')
    const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
    const packagesWindows = resolvedPlatform === 'win32'
 -  const policy = packagesMacOS && unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
@@ -131,8 +126,8 @@ index f08b7838..60a50c67 100644
 +    ? undefined : resolveDesktopPolicyEnvironment(env)
    if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
    const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
-   if (packagesMacOS && !unsigned) resolveMacOSNotarizationEnvironment(env)
-@@ -89,7 +90,8 @@ export function createElectronBuilderConfig(
+   if (packagesMacOS && !unsigned && !skipNotarization) resolveMacOSNotarizationEnvironment(env)
+@@ -95,7 +96,8 @@
    if (windowsSigner !== undefined) {
      installWindowsNsisBootstrapSigner({ sign: windowsSigner })
    }
@@ -143,10 +138,9 @@ index f08b7838..60a50c67 100644
    // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
    // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
 diff --git a/apps/desktop/scripts/prepare-dsh.ts b/apps/desktop/scripts/prepare-dsh.ts
-index 7d290b94..632544cd 100644
 --- a/apps/desktop/scripts/prepare-dsh.ts
 +++ b/apps/desktop/scripts/prepare-dsh.ts
-@@ -42,7 +42,7 @@ const STORE_ROOT = join(BUILD_ROOT, 'store')
+@@ -43,7 +43,7 @@
  const RUNTIME_ROOT = BUILD_PATHS.runtime
  const PNPM_BUILD_STATE = BUILD_PATHS.dshPnpm
  const PACKAGE_SET_ROOT = BUILD_PATHS.packageSet
@@ -156,10 +150,9 @@ index 7d290b94..632544cd 100644
  
  function manifestVersion(path: string, subject: string): string {
 diff --git a/apps/desktop/scripts/prepare-runtime.ts b/apps/desktop/scripts/prepare-runtime.ts
-index ba92fef0..51223457 100644
 --- a/apps/desktop/scripts/prepare-runtime.ts
 +++ b/apps/desktop/scripts/prepare-runtime.ts
-@@ -22,12 +22,14 @@ type DesktopTarget = ReturnType<typeof desktopTargetPlatform>
+@@ -22,12 +22,14 @@
  /** Extract the target Electron distribution and return its embedded Node version. */
  async function prepareElectron({ platform, arch }: DesktopTarget): Promise<string> {
    const require = createRequire(import.meta.url)
@@ -176,7 +169,7 @@ index ba92fef0..51223457 100644
    return execFileSync(executable, ['-p', 'process.versions.node'], {
      encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
    }).trim()
-@@ -37,7 +39,8 @@ function prepareCli({ platform, arch }: DesktopTarget): void {
+@@ -37,7 +39,8 @@
    cpSync(join(import.meta.dirname, 'node-bin'), join(RUNTIME_ROOT, 'bin'), { recursive: true })
    chmodSync(join(RUNTIME_ROOT, 'bin', 'node'), 0o755)
    const cli = join(RUNTIME_ROOT, 'cli')
@@ -187,10 +180,9 @@ index ba92fef0..51223457 100644
      const minimumVersion = execFileSync('/usr/libexec/PlistBuddy', [
        '-c', 'Print LSMinimumSystemVersion', join(BUILD_PATHS.electron, 'Electron.app', 'Contents', 'Info.plist'),
 diff --git a/apps/desktop/scripts/smoke-prepared-runtime.ts b/apps/desktop/scripts/smoke-prepared-runtime.ts
-index e6afd574..f6787b03 100644
 --- a/apps/desktop/scripts/smoke-prepared-runtime.ts
 +++ b/apps/desktop/scripts/smoke-prepared-runtime.ts
-@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
+@@ -5,7 +5,7 @@
  import { join, resolve } from 'node:path'
  import { promisify } from 'node:util'
  import { runtimeArchivePath } from '../../desktop-host/src/office-engine.ts'
@@ -199,7 +191,7 @@ index e6afd574..f6787b03 100644
  import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
  import { scrubWindowsSigningEnvironment } from './windows-sign.mjs'
  import { smokeDesktopRuntime } from './smoke-runtime.ts'
-@@ -22,6 +22,7 @@ import { verifyRuntimeArchive } from './verify-runtime-archive.ts'
+@@ -22,6 +22,7 @@
  export async function smokePreparedRuntime(
    root: string, node: string, resourcesRuntime: string, descriptor: DesktopRuntimeDescriptor,
  ): Promise<void> {
@@ -208,7 +200,6 @@ index e6afd574..f6787b03 100644
    const environment = { ...scrubWindowsSigningEnvironment(process.env), NODE_OPTIONS: '',
      NARB_NATIVE_CACHE_DIR: cache, NARB_DISABLE_NATIVE_CACHE: '0' }
 diff --git a/apps/desktop/scripts/smoke-runtime.ts b/apps/desktop/scripts/smoke-runtime.ts
-index dec4f8fb..65b3ebbc 100644
 --- a/apps/desktop/scripts/smoke-runtime.ts
 +++ b/apps/desktop/scripts/smoke-runtime.ts
 @@ -1,14 +1,16 @@
@@ -229,7 +220,7 @@ index dec4f8fb..65b3ebbc 100644
  import { createPluginProfile } from '../src/project-manager.ts'
  import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
  
-@@ -24,6 +26,7 @@ import type { DesktopRuntimeDescriptor } from '../src/runtime-tree.ts'
+@@ -24,6 +26,7 @@
  export async function smokeDesktopRuntime(
    root: string, node: string, runtime: DesktopRuntimeDescriptor, environment: NodeJS.ProcessEnv, resourcesRuntime: string,
  ): Promise<void> {
@@ -237,7 +228,7 @@ index dec4f8fb..65b3ebbc 100644
    const home = mkdtempSync(join(tmpdir(), 'dsh-desktop-smoke-'))
    const profile = join(home, 'profiles', 'desktop')
    const hostEnvironment = {
-@@ -59,8 +62,12 @@ export function apply(ctx) {
+@@ -59,8 +62,12 @@
      writeFileSync(join(installedPlugin, 'bundle.yml'), `- insert:\n    - id: ${installedName}\n      name: ${installedName}\n      inject: [webServer]\n`)
      appendFileSync(join(profile, 'pnpm-workspace.yaml'), 'offline: true\nupdateNotifier: false\n')
      const cli = join(root, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js')
@@ -251,7 +242,7 @@ index dec4f8fb..65b3ebbc 100644
        { cwd: home, env: { ...hostEnvironment, ELECTRON_RUN_AS_NODE: '1' }, timeout: 120_000, windowsHide: true })
      await runCli(['add', `file:${installedPlugin}`, '--offline', '--ignore-scripts'])
      const installedEntry = join(profile, 'node_modules', installedName, 'index.js')
-@@ -88,6 +95,9 @@ import { Context } from '@deepseek-ai/cordis'
+@@ -88,6 +95,9 @@
  import { inspect, promisify } from 'node:util'
  import { execFile } from 'node:child_process'
  import { readFile } from 'node:fs/promises'
@@ -261,10 +252,15 @@ index dec4f8fb..65b3ebbc 100644
  export function apply(ctx) {
    if (!(ctx instanceof Context)) throw new Error('desktop runtime: external plugin loaded another Cordis instance')
    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke',
-@@ -101,6 +111,25 @@ export function apply(ctx) {
-         response.end(inspect(error, { depth: 5 }))
-       }
-     } }))
+@@ -96,6 +106,25 @@
+     async handler(_request, response) {
+       try {
+         response.end(JSON.stringify(await ctx.pluginManager.installBundle(${JSON.stringify(installedPlugin)})))
++      } catch (error) {
++        response.statusCode = 500
++        response.end(inspect(error, { depth: 5 }))
++      }
++    } }))
 +  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke-sharp',
 +    async handler(_request, response) {
 +      try {
@@ -279,15 +275,10 @@ index dec4f8fb..65b3ebbc 100644
 +        }
 +        response.end(JSON.stringify({ node: process.versions.node, executable: process.execPath,
 +          electron: process.versions.electron ?? null, resizes: 100 }))
-+      } catch (error) {
-+        response.statusCode = 500
-+        response.end(inspect(error, { depth: 5 }))
-+      }
-+    } }))
-   ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/desktop-smoke-office-cli',
-     async handler(_request, response) {
-       try {
-@@ -165,6 +194,16 @@ export function apply(ctx) {
+       } catch (error) {
+         response.statusCode = 500
+         response.end(inspect(error, { depth: 5 }))
+@@ -165,6 +194,16 @@
      if (!installation.ok || !installed.ok || await installed.text() !== 'installed plugin ready') {
        throw new Error(`desktop runtime: bundled pnpm plugin installation failed: ${installationResult}`)
      }
@@ -304,7 +295,7 @@ index dec4f8fb..65b3ebbc 100644
      for (const { extension } of inputs) {
        const converted = await fetch(new URL(`/desktop-smoke-office/${extension}`, ready.url), {
          headers: { cookie }, signal: AbortSignal.timeout(120_000),
-@@ -187,7 +226,7 @@ export function apply(ctx) {
+@@ -187,7 +226,7 @@
      console.log('desktop runtime: DOCX, XLSX, PPTX to PDF and skill CLI discovery passed')
    } finally {
      clearTimeout(timer)
@@ -314,10 +305,25 @@ index dec4f8fb..65b3ebbc 100644
      }
    }
 diff --git a/apps/desktop/src/host-process.ts b/apps/desktop/src/host-process.ts
-index 948a88e6..eb86da70 100644
 --- a/apps/desktop/src/host-process.ts
 +++ b/apps/desktop/src/host-process.ts
-@@ -155,7 +155,7 @@ export class DesktopHostProcess {
+@@ -1,5 +1,6 @@
+ /** Electron Node-mode child lifecycle for the shared Web application. */
+ 
++import { randomUUID } from 'node:crypto'
+ import { spawn, type ChildProcess } from 'node:child_process'
+ import { join } from 'node:path'
+ import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
+@@ -25,6 +26,8 @@
+ 
+ type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'shutdown-complete' } | {
+   readonly type: 'update-tasks'
++  readonly admissionVersion?: number
++  readonly token?: string
+   readonly requestId: number
+   readonly active: boolean
+   readonly error?: string
+@@ -155,7 +158,7 @@
    }>()
  
    /**
@@ -326,11 +332,42 @@ index 948a88e6..eb86da70 100644
     * @param runtimeDir - Immutable packages carried by the current application.
     * @param projectDir - Desktop plugin profile and child working directory.
     * @param inspectPort - Optional loopback inspector port for workspace development.
+@@ -240,9 +243,21 @@
+    * @returns Whether live tasks would be affected. Locking drains admitted API requests before inspecting tasks;
+    * an unanswered drain fails at the control-request deadline without authorizing installation.
+    */
++  private updateLease: string | undefined
++
+   async updateTasks(action: 'inspect' | 'lock' | 'unlock'): Promise<boolean> {
+-    const response = await this.control({ type: 'update-tasks', action }, 10_000, 'desktop update: task inspection timed out')
++    if (action === 'lock') {
++      if (this.updateLease !== undefined) throw new Error('desktop update: admission already requested')
++      this.updateLease = randomUUID()
++    }
++    const token = action === 'inspect' ? undefined : this.updateLease
++    if (action === 'unlock' && token === undefined) return false
++    const response = await this.control({ type: 'update-tasks', action, ...(token === undefined ? {} : { token }) }, 10_000, 'desktop update: task inspection timed out')
+     if (response.type !== 'update-tasks') throw new Error('desktop update: Host answered with a different control response')
++    if (response.admissionVersion !== 1 || response.token !== token) {
++      throw new Error('desktop update: Host lacks verified task admission capability')
++    }
++    if ((action === 'unlock' || (action === 'lock' && response.active)) && this.updateLease === token) this.updateLease = undefined
+     return response.active
+   }
+ 
+@@ -258,7 +273,7 @@
+   }
+ 
+   private async control(
+-    request: { readonly type: 'update-tasks'; readonly action: 'inspect' | 'lock' | 'unlock' } | { readonly type: 'quit-inspection' },
++    request: { readonly type: 'update-tasks'; readonly action: 'inspect' | 'lock' | 'unlock'; readonly token?: string } | { readonly type: 'quit-inspection' },
+     deadlineMs: number, deadlineMessage: string,
+   ): Promise<DesktopHostControlResponse> {
+     const child = this.child
 diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
-index fc19021f..32f9c847 100644
 --- a/apps/desktop/src/ipc.ts
 +++ b/apps/desktop/src/ipc.ts
-@@ -27,6 +27,8 @@ export const DESKTOP_IPC = {
+@@ -27,6 +27,8 @@
    updatesStatus: 'dsh-desktop:updates-status',
    updatesOpen: 'dsh-desktop:updates-open',
    updatesPresentation: 'dsh-desktop:updates-presentation',
@@ -339,7 +376,7 @@ index fc19021f..32f9c847 100644
    nativeThemeSet: 'dsh-desktop:native-theme-set',
    windowFullscreen: 'dsh-desktop:window-fullscreen',
    windowsAppearance: 'dsh-desktop:windows-appearance',
-@@ -84,6 +86,13 @@ export interface DshDesktopProductApi {
+@@ -84,6 +86,13 @@
      open(): Promise<void>
      subscribe(listener: (state: DesktopUpdatePresentation) => void): () => void
    }
@@ -354,10 +391,9 @@ index fc19021f..32f9c847 100644
  
  /** Scheme of Desktop-owned application documents. */
 diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
-index 5d9d4607..bec0ff5e 100644
 --- a/apps/desktop/src/locale.ts
 +++ b/apps/desktop/src/locale.ts
-@@ -31,17 +31,17 @@ export const en = {
+@@ -31,17 +31,17 @@
    application: 'Application',
    fileMenu: 'File',
    closePage: 'Close Page or Window',
@@ -381,7 +417,7 @@ index 5d9d4607..bec0ff5e 100644
    quitActiveTasks: 'Running tasks will be interrupted.',
    quitScheduledTasks: 'Scheduled tasks will not run while the app is closed.',
    quitActiveAndScheduledTasks: 'Running tasks will be interrupted, and scheduled tasks will not run while the app is closed.',
-@@ -56,7 +56,7 @@ export const en = {
+@@ -56,7 +56,7 @@
    copy: 'Copy',
    paste: 'Paste',
    selectAll: 'Select All',
@@ -390,7 +426,7 @@ index 5d9d4607..bec0ff5e 100644
    fatalSummary: 'The application could not start or stopped unexpectedly.',
    startupAddressInUse: 'Another DSH instance (such as dsh web or the desktop app) is running. They cannot start at the same time. Quit the other running DSH instance, then restart.',
    diagnosticTruncated: '… Error details shortened.',
-@@ -66,10 +66,10 @@ export const en = {
+@@ -66,10 +66,10 @@
    restartApplication: 'Restart',
    recoveryOperationFailed: 'The recovery operation failed',
    disableThirdPartyPlugins: 'Disable third-party plugins, back up profile patch, and restart',
@@ -404,7 +440,7 @@ index 5d9d4607..bec0ff5e 100644
    welcomeTaglineAfter: '',
    welcomeDescription: 'Build potential. Explore intelligence.',
    welcomeAuthStarting: 'Opening sign in…',
-@@ -130,7 +130,7 @@ export const en = {
+@@ -130,7 +130,7 @@
    updateTasksUnavailable: 'Task status is unavailable. Try updating again when the workspace is ready.',
    updateStopFailed: 'Could not safely stop the tasks. The update has not been installed. Please try again later.',
    updateTechnicalDetails: 'View technical details',
@@ -413,7 +449,7 @@ index 5d9d4607..bec0ff5e 100644
    updateAvailable: 'New version available: {version}',
    updateDetail: 'Once the download is complete, you can install the update and restart the app.',
    installAndRestart: 'Install and Restart',
-@@ -202,17 +202,17 @@ export const zh = {
+@@ -202,17 +202,17 @@
    application: '应用',
    fileMenu: '文件',
    closePage: '关闭页面或窗口',
@@ -437,7 +473,7 @@ index 5d9d4607..bec0ff5e 100644
    quitActiveTasks: '当前正在运行的任务将会中断',
    quitScheduledTasks: '应用关闭期间，定时任务不会运行',
    quitActiveAndScheduledTasks: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
-@@ -227,7 +227,7 @@ export const zh = {
+@@ -227,7 +227,7 @@
    copy: '复制',
    paste: '粘贴',
    selectAll: '全选',
@@ -446,7 +482,7 @@ index 5d9d4607..bec0ff5e 100644
    fatalSummary: '应用无法启动或已意外停止。',
    startupAddressInUse: '有其他正在运行的 DSH（如其他 dsh web、桌面端），无法同时启动，请退出其他正在运行的 DSH 后重启。',
    diagnosticTruncated: '… 错误详情已截短。',
-@@ -237,10 +237,10 @@ export const zh = {
+@@ -237,10 +237,10 @@
    restartApplication: '重启',
    recoveryOperationFailed: '恢复操作失败',
    disableThirdPartyPlugins: '禁用第三方插件、备份 profile patch 并重启',
@@ -460,7 +496,7 @@ index 5d9d4607..bec0ff5e 100644
    welcomeTaglineAfter: '',
    welcomeDescription: '组装无限可能，共探智能上限',
    welcomeAuthStarting: '正在打开登录…',
-@@ -301,7 +301,7 @@ export const zh = {
+@@ -301,7 +301,7 @@
    updateTasksUnavailable: '无法确认任务状态，请在工作区就绪后重试更新。',
    updateStopFailed: '未能安全停止任务，更新尚未安装，请稍后重试。',
    updateTechnicalDetails: '查看技术详情',
@@ -470,10 +506,9 @@ index 5d9d4607..bec0ff5e 100644
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 1202670a..fb0e1a8f 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
+@@ -2,8 +2,8 @@
  import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
  /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
  
@@ -484,7 +519,7 @@ index 1202670a..fb0e1a8f 100644
  import { fileURLToPath } from 'node:url'
  import {
    app,
-@@ -29,6 +29,7 @@ import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-vi
+@@ -29,6 +29,7 @@
  import { installDesktopDirectoryPicker } from './directory-picker.ts'
  import { installMicrophonePermissions } from './microphone-permissions.ts'
  import { DesktopBackendController } from './backend-controller.ts'
@@ -492,7 +527,7 @@ index 1202670a..fb0e1a8f 100644
  import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
  import { readDeviceInfo } from './device-info.ts'
  import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
-@@ -53,7 +54,7 @@ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
+@@ -54,7 +55,7 @@
  import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
  import { readDesktopSettings } from './settings.ts'
  import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
@@ -501,7 +536,7 @@ index 1202670a..fb0e1a8f 100644
  import { DesktopBrowserGuests } from './browser-guests.ts'
  import { installDesktopShortcuts } from './keyboard.ts'
  import { DesktopUpdateOverlays } from './update-overlay.ts'
-@@ -69,6 +70,8 @@ let shuttingDown = false
+@@ -70,6 +71,8 @@
   * development restart command. The installer handoff has its own before-quit branch.
   */
  let skipQuitConfirmation = false
@@ -510,7 +545,7 @@ index 1202670a..fb0e1a8f 100644
  let windowsLanguage: string | undefined
  /**
   * Whether the backend has reached ready: false until the first ready, back to
-@@ -96,7 +99,7 @@ const recovery = new DesktopFatalRecovery({
+@@ -97,7 +100,7 @@
    show: options => dialog.showMessageBox(options),
    stop: () => { shuttingDown = true; return stopForRecovery() },
    disablePlugins: async () => {
@@ -519,7 +554,7 @@ index 1202670a..fb0e1a8f 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -149,9 +152,51 @@ interface RuntimeResources {
+@@ -150,9 +153,52 @@
    readonly dsh: string
  }
  
@@ -546,6 +581,7 @@ index 1202670a..fb0e1a8f 100644
 +    bundled: { dsh: string; runtime: string }
 +    verifyKernel: (dsh: string, version: string) => Promise<unknown>
 +    probeKernel: (kernel: { dsh: string; runtime: string }) => Promise<void>
++    inspectTasks: () => Promise<boolean>
 +    prepareRestart: () => Promise<boolean>
 +    restart: (execPath?: string) => void
 +    finishRestart: () => void
@@ -573,10 +609,12 @@ index 1202670a..fb0e1a8f 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -161,6 +206,62 @@ function runtimeResources(): RuntimeResources {
+@@ -160,6 +206,62 @@
+   const dsh = (development ? process.env.DSH_DESKTOP_DSH_DIR : undefined)
+     ?? (development ? join(app.getAppPath(), '.desktop-build', 'development', 'project') : join(app.getAppPath(), 'dsh'))
    return { node, nodeBin, pnpm, dsh }
- }
- 
++}
++
 +/** Check a candidate Host and WebUI without reading the user's profile or credentials. */
 +async function probeWorkbenchKernel(kernel: { dsh: string; runtime: string }): Promise<void> {
 +  const version = readDesktopRuntime(kernel.dsh).release.version
@@ -631,12 +669,10 @@ index 1202670a..fb0e1a8f 100644
 +    }
 +    await rm(temporary, { recursive: true, force: true })
 +  }
-+}
-+
+ }
+ 
  function developmentPrimaryRuntime(): string {
-   const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
-   if (directory === undefined || directory === '') {
-@@ -314,16 +415,55 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+@@ -315,16 +417,60 @@
  }
  
  async function main(): Promise<void> {
@@ -673,6 +709,11 @@ index 1202670a..fb0e1a8f 100644
 +      bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
 +      verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
 +      probeKernel: probeWorkbenchKernel,
++      inspectTasks: async () => {
++        const host = backend.host
++        if (host === undefined) throw new Error('无法确认 Host 任务状态，暂缓安装')
++        return host.updateTasks('inspect')
++      },
 +      prepareRestart: () => prepareWorkbenchRestart(),
 +      restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
 +      finishRestart: () => { quitWithoutConfirmation() },
@@ -697,7 +738,7 @@ index 1202670a..fb0e1a8f 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -444,7 +584,11 @@ async function main(): Promise<void> {
+@@ -445,7 +591,11 @@
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -710,7 +751,7 @@ index 1202670a..fb0e1a8f 100644
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -510,8 +654,9 @@ async function main(): Promise<void> {
+@@ -511,8 +661,9 @@
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -722,7 +763,7 @@ index 1202670a..fb0e1a8f 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -566,77 +711,120 @@ async function main(): Promise<void> {
+@@ -567,76 +718,121 @@
    }
    stopForRecovery = () => backend.close()
  
@@ -796,6 +837,7 @@ index 1202670a..fb0e1a8f 100644
 +    const host = backend.host
 +    if (host === undefined) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
 +    const active = await host.updateTasks('inspect')
++    if (independentUpdate && active !== false) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
 +    const ready = independentUpdate
 +      ? { message: locale.messages.installAndRestart, detail: locale.messages.updateDownloadedDetail }
 +      : desktopUpdateReadyConfirmation(locale.messages, updates.state.version ?? '', process.platform)
@@ -806,9 +848,9 @@ index 1202670a..fb0e1a8f 100644
 +      buttons: [active ? locale.messages.updateStopTasks : locale.messages.installAndRestart, locale.messages.updateLater],
 +      defaultId: 1, cancelId: 1,
 +    }
-+    if (isMandatory()) {
++    if (!independentUpdate && isMandatory()) {
 +      if (!await mandatoryUI?.confirm(updates.state.version ?? '', active)) return false
-+    } else {
++    } else if (!independentUpdate) {
 +      const parent = currentDialogWindow()
 +      if (parent === undefined) return false
 +      const result = await updateDialog.show(parent, confirmation)
@@ -820,7 +862,7 @@ index 1202670a..fb0e1a8f 100644
 +    if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
 +    try {
 +      const stillActive = await host.updateTasks('lock')
-+      if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
++      if (independentUpdate ? stillActive !== false : stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
 +      mandatoryUI?.preparingRestart(stillActive)
 +      // The embedded Platform document holds credentials issued by the Host that is about to stop.
 +      await platformView.closeAndWait()
@@ -842,6 +884,8 @@ index 1202670a..fb0e1a8f 100644
 +    return true
 +  }
 +  const prepareWorkbenchRestart = (): Promise<boolean> => prepareRestart(true)
+   const manifest: unknown = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8'))
+   const updateChannel = desktopUpdateChannel(manifest)
    const updates = new DesktopUpdateCoordinator(
      publishUpdate,
 -    async () => {
@@ -896,11 +940,8 @@ index 1202670a..fb0e1a8f 100644
 +    () => prepareRestart(),
      undefined, undefined, undefined,
      (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
--
-   )
- 
-   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
-@@ -929,7 +1117,7 @@ async function main(): Promise<void> {
+     updateChannel,
+@@ -932,7 +1128,7 @@
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -909,7 +950,7 @@ index 1202670a..fb0e1a8f 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -956,7 +1144,10 @@ async function main(): Promise<void> {
+@@ -959,7 +1155,10 @@
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -921,7 +962,7 @@ index 1202670a..fb0e1a8f 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -978,19 +1169,22 @@ async function main(): Promise<void> {
+@@ -981,19 +1180,22 @@
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -948,7 +989,7 @@ index 1202670a..fb0e1a8f 100644
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1229,7 +1423,9 @@ async function main(): Promise<void> {
+@@ -1232,7 +1434,9 @@
      window.focus()
    }
  
@@ -959,7 +1000,7 @@ index 1202670a..fb0e1a8f 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1244,6 +1440,7 @@ async function main(): Promise<void> {
+@@ -1247,6 +1451,7 @@
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -967,7 +1008,7 @@ index 1202670a..fb0e1a8f 100644
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1279,6 +1476,7 @@ async function main(): Promise<void> {
+@@ -1282,6 +1487,7 @@
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }
@@ -976,7 +1017,6 @@ index 1202670a..fb0e1a8f 100644
        if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
      }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
 diff --git a/apps/desktop/src/node-environment.ts b/apps/desktop/src/node-environment.ts
-index 680b4395..0d9732ff 100644
 --- a/apps/desktop/src/node-environment.ts
 +++ b/apps/desktop/src/node-environment.ts
 @@ -1,10 +1,28 @@
@@ -1013,10 +1053,9 @@ index 680b4395..0d9732ff 100644
   * @param environment - Caller environment preserved for plugin execution.
   * @returns Environment for a Node-mode child process.
 diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
-index f590b8bc..3d61823e 100644
 --- a/apps/desktop/src/preload-app.ts
 +++ b/apps/desktop/src/preload-app.ts
-@@ -55,6 +55,10 @@ function createProductApi(): DshDesktopProductApi {
+@@ -55,6 +55,10 @@
          return () => { ipcRenderer.off(DESKTOP_IPC.updatesPresentation, handle) }
        },
      },
@@ -1028,7 +1067,6 @@ index f590b8bc..3d61823e 100644
  }
  
 diff --git a/apps/desktop/src/tray.ts b/apps/desktop/src/tray.ts
-index b2ce416b..d06e5b91 100644
 --- a/apps/desktop/src/tray.ts
 +++ b/apps/desktop/src/tray.ts
 @@ -1,15 +1,17 @@
@@ -1051,7 +1089,7 @@ index b2ce416b..d06e5b91 100644
    /** Request quit through the same confirmation as every other quit entry. */
    readonly quit: () => void
  }
-@@ -18,7 +20,7 @@ export interface DesktopTrayOptions {
+@@ -18,7 +20,7 @@
  export class DesktopTray {
    private tray: Tray | undefined
  
@@ -1060,7 +1098,7 @@ index b2ce416b..d06e5b91 100644
    constructor(private readonly options: DesktopTrayOptions) {
      const tray = new Tray(nativeImage.createFromPath(options.iconPath))
      this.tray = tray
-@@ -35,6 +37,7 @@ export class DesktopTray {
+@@ -35,6 +37,7 @@
      tray.setContextMenu(Menu.buildFromTemplate([
        { label: messages.openApplication, click: () => { this.options.open() } },
        { type: 'separator' },
@@ -1069,10 +1107,9 @@ index b2ce416b..d06e5b91 100644
      ]))
    }
 diff --git a/apps/desktop/tests/fixtures/pnpm-smoke.mjs b/apps/desktop/tests/fixtures/pnpm-smoke.mjs
-index 5d16769a..54c95ad0 100644
 --- a/apps/desktop/tests/fixtures/pnpm-smoke.mjs
 +++ b/apps/desktop/tests/fixtures/pnpm-smoke.mjs
-@@ -13,7 +13,8 @@ import { delimiter, join } from 'node:path'
+@@ -13,7 +13,8 @@
   * @returns {Promise<void>} Resolves after execution and removal of the private installation.
   */
  export async function checkPnpm(resourcesRuntime) {
@@ -1082,7 +1119,7 @@ index 5d16769a..54c95ad0 100644
    assert.equal(existsSync(join(resourcesRuntime, 'pnpm')), false, 'Desktop must ship only primary-runtime pnpm')
    const primary = join(resourcesRuntime, 'primary-runtime')
    const pnpm = join(primary, 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -36,7 +37,7 @@ export async function checkPnpm(resourcesRuntime) {
+@@ -36,7 +37,7 @@
  const assert = require('node:assert/strict')
  assert.equal(require('desktop-pnpm-smoke-dependency').answer, 42)
  assert.equal(process.execPath, ${JSON.stringify(process.execPath)})
@@ -1092,7 +1129,6 @@ index 5d16769a..54c95ad0 100644
  assert.equal(typeof require('internal/modules/esm/loader').getOrInitializeCascadedLoader, 'function')
  console.log('desktop-node-script-ok')
 diff --git a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
-index 3cda38c6..14349cb8 100644
 --- a/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 +++ b/apps/desktop/tests/fixtures/runtime-payload-smoke.mjs
 @@ -1,4 +1,4 @@
@@ -1101,7 +1137,7 @@ index 3cda38c6..14349cb8 100644
  
  import assert from 'node:assert/strict'
  import { execFileSync } from 'node:child_process'
-@@ -14,10 +14,18 @@ const runtime = process.argv[2]
+@@ -14,10 +14,18 @@
  assert.ok(runtime, 'Pass the filtered resources/dsh directory')
  const root = resolve(runtime)
  const descriptor = JSON.parse(readFileSync(join(root, 'desktop-runtime.json'), 'utf8'))
@@ -1121,7 +1157,7 @@ index 3cda38c6..14349cb8 100644
  const requireRuntime = createRequire(join(root, 'package.json'))
  const scratch = mkdtempSync(join(tmpdir(), 'dsh-runtime-payload-'))
  
-@@ -106,7 +114,7 @@ function checkKoffi() {
+@@ -106,7 +114,7 @@
    }
  }
  
@@ -1130,7 +1166,7 @@ index 3cda38c6..14349cb8 100644
  async function checkSharp() {
    const sharp = requireRuntime('sharp')
    const pixel = Buffer.from([17, 103, 231])
-@@ -116,6 +124,12 @@ async function checkSharp() {
+@@ -116,6 +124,12 @@
    assert.equal(decoded.info.height, 1)
    assert.equal(decoded.info.channels, 3)
    assert.deepEqual(decoded.data, pixel)
@@ -1144,7 +1180,6 @@ index 3cda38c6..14349cb8 100644
  
  /** Exercise Domino parsing through the HTML converter and GFM plugin used by web_fetch. */
 diff --git a/apps/desktop/tests/node-environment.spec.ts b/apps/desktop/tests/node-environment.spec.ts
-index 5050e4fb..d9ed00e0 100644
 --- a/apps/desktop/tests/node-environment.spec.ts
 +++ b/apps/desktop/tests/node-environment.spec.ts
 @@ -1,6 +1,28 @@
@@ -1179,10 +1214,9 @@ index 5050e4fb..d9ed00e0 100644
  it('keeps private Desktop launchers out of the Host environment inherited by PTC', () => {
    const environment = { PATH: '/user/bin', HOME: '/user' }
 diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
-index 11c3a488..32d4c3a1 100644
 --- a/apps/desktop/tests/tray.spec.ts
 +++ b/apps/desktop/tests/tray.spec.ts
-@@ -27,35 +27,38 @@ vi.mock('electron', () => ({
+@@ -27,35 +27,38 @@
  
  afterEach(() => { native.trays.length = 0; native.menus.length = 0; vi.clearAllMocks() })
  
@@ -1231,7 +1265,7 @@ index 11c3a488..32d4c3a1 100644
    expect(f.quit).toHaveBeenCalledOnce()
  })
  
-@@ -63,7 +66,7 @@ it('relabels the menu in the current locale and ignores relabel after disposal',
+@@ -63,7 +66,7 @@
    const f = setup()
    f.setLocale('zh')
    f.tray.relabel()
@@ -1241,21 +1275,20 @@ index 11c3a488..32d4c3a1 100644
    f.tray.dispose()
    expect(f.native.destroy).toHaveBeenCalledOnce()
 diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
-index 79152482..e8768927 100644
 --- a/apps/desktop/tests/welcome-startup.spec.ts
 +++ b/apps/desktop/tests/welcome-startup.spec.ts
-@@ -107,6 +107,10 @@ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
+@@ -106,6 +106,10 @@
+ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
    ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
    readDesktopLoginShellEnvironment: async (base: NodeJS.ProcessEnv) => ({ environment: base, failures: [] }),
- }))
++}))
 +vi.mock('../src/node-environment.ts', async importOriginal => ({
 +  ...await importOriginal<typeof import('../src/node-environment.ts')>(),
 +  resolveDesktopHostNode: async (_primary: string, electron: string) => process.platform === 'linux' ? '/runtime/node' : electron,
-+}))
+ }))
  vi.mock('../src/project-manager.ts', () => ({ DesktopProjectManager: class {
    applyRelease = vi.fn(async () => {})
-   canRecoverProfile = vi.fn(() => true)
-@@ -262,7 +266,7 @@ it.each([false, true])('starts welcome onboarding without carrying update focus
+@@ -262,7 +266,7 @@
    expect(state.menu).toHaveBeenCalledTimes(initialMenus)
    changed(event, 'en')
    expect(state.dialogLocale!().id).toBe('en')
@@ -1265,7 +1298,6 @@ index 79152482..e8768927 100644
    const welcomeCount = state.beforeWelcome.mock.calls.length
    state.hasApiKey = true
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
-index 66f159a3..a601e6f3 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
 +++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.module.css
 @@ -5,3 +5,7 @@
@@ -1277,7 +1309,6 @@ index 66f159a3..a601e6f3 100644
 +  margin-inline-start: 8px;
 +}
 diff --git a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
-index e3c8cb70..943cd148 100644
 --- a/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 +++ b/packages/client/ui-settings-general/src/client/CurrentVersionRow.tsx
 @@ -1,14 +1,70 @@
@@ -1359,10 +1390,9 @@ index e3c8cb70..943cd148 100644
 +  </div>
  }
 diff --git a/packages/client/ui-settings-general/src/client/index.ts b/packages/client/ui-settings-general/src/client/index.ts
-index a17ea2c5..c2853995 100644
 --- a/packages/client/ui-settings-general/src/client/index.ts
 +++ b/packages/client/ui-settings-general/src/client/index.ts
-@@ -33,6 +33,7 @@ import { DesktopUpdateSource } from './desktop-update-source.ts'
+@@ -36,6 +36,7 @@
  import { CloseLabel, HeaderContent, TriggerContent } from './chrome.tsx'
  import { GeneralSection } from './GeneralSection.tsx'
  import { CurrentVersionRow } from './CurrentVersionRow.tsx'
@@ -1370,7 +1400,7 @@ index a17ea2c5..c2853995 100644
  import { DeveloperToolsRow, type DeveloperToolsRowInjected } from './DeveloperToolsRow.tsx'
  import { SettingsDocumentAction } from './SettingsDocumentAction.tsx'
  import type { SettingsDocumentActionInjected } from './SettingsDocumentAction.tsx'
-@@ -81,13 +82,23 @@ export function apply(ctx: ClientContext): void {
+@@ -85,13 +86,23 @@
      }),
    }, DeveloperToolsRow))
    // Version information follows the core preferences.
@@ -1397,10 +1427,9 @@ index a17ea2c5..c2853995 100644
    ctx.slots.inject('sidebar.toggle.badge', () => ctx.slots.register({
      name: 'sidebar.toggle.badge', locale: NS,
 diff --git a/packages/client/ui-settings-general/src/client/locales.ts b/packages/client/ui-settings-general/src/client/locales.ts
-index 8d0f2530..ceb078b6 100644
 --- a/packages/client/ui-settings-general/src/client/locales.ts
 +++ b/packages/client/ui-settings-general/src/client/locales.ts
-@@ -28,6 +28,14 @@ export const zh = {
+@@ -28,6 +28,14 @@
    'openDocument.error': '无法打开配置文件',
    'general.nav': '通用设置',
    'general.currentVersion': '当前版本：{version}',
@@ -1415,7 +1444,7 @@ index 8d0f2530..ceb078b6 100644
    'developerTools.title': '显示代码工作视图',
    'developerTools.error': '保存失败，请重试',
    'developerTools.description': '开启后，显示轨迹、本轮代码差异，可选择完整的 Agent 预设切换',
-@@ -69,6 +77,14 @@ export const en = {
+@@ -76,6 +84,14 @@
    'openDocument.error': 'Could not open configuration file',
    'general.nav': 'General',
    'general.currentVersion': 'Current version: {version}',
@@ -1431,10 +1460,9 @@ index 8d0f2530..ceb078b6 100644
    'developerTools.error': 'Could not save. Please try again.',
    'developerTools.description': 'Shows trajectory, code diffs, and all Agent presets',
 diff --git a/packages/client/ui-settings-general/tests/components.client.spec.tsx b/packages/client/ui-settings-general/tests/components.client.spec.tsx
-index ac2e7f00..915b07ec 100644
 --- a/packages/client/ui-settings-general/tests/components.client.spec.tsx
 +++ b/packages/client/ui-settings-general/tests/components.client.spec.tsx
-@@ -240,6 +240,40 @@ describe('current version', () => {
+@@ -242,6 +242,40 @@
      expect(screen.queryByRole('button')).toBeNull()
    })
  
@@ -1475,3 +1503,1651 @@ index ac2e7f00..915b07ec 100644
    it('omits the row when a partial build has no version metadata', () => {
      vi.stubEnv('DSH_CLIENT_VERSION', undefined)
      const view = render(<CurrentVersionRow {...kit} t={t} />)
+diff --git a/packages/core/agent/src/update-admission.ts b/packages/core/agent/src/update-admission.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/core/agent/src/update-admission.ts
+@@ -0,0 +1,62 @@
++import { AsyncLocalStorage } from 'node:async_hooks'
++import { isPromise } from 'node:util/types'
++
++/** Reversible process-local admission, shared by managed task producers. */
++export class UpdateAdmissionGate {
++  readonly version: 1 = 1
++  private owner: string | undefined
++  private pending = 0
++  private unknown = false
++  private readonly permits = new AsyncLocalStorage<{ active: boolean }>()
++  private readonly listeners = new Set<() => void>()
++  get active(): number { return this.pending + (this.unknown ? 1 : 0) }
++  get frozen(): boolean { return this.owner !== undefined }
++  markUnknown(): void { this.unknown = true }
++  assertOpen(): void {
++    if (this.frozen && this.permits.getStore()?.active !== true) {
++      throw new Error('desktop update: task admission is frozen; retry after the update')
++    }
++  }
++  run<T>(operation: () => T): T {
++    this.assertOpen()
++    const permit = { active: true }
++    this.pending++
++    const release = (): void => {
++      if (!permit.active) return
++      permit.active = false
++      this.pending--
++    }
++    try {
++      const result = this.permits.run(permit, operation)
++      try {
++        if (isPromise(result)) {
++          void Promise.prototype.then.call(result, release, release)
++        } else if (result !== null && (typeof result === 'object' || typeof result === 'function')
++          && typeof (result as { then?: unknown }).then === 'function') {
++          void Promise.resolve(result).then(release, release)
++        } else release()
++      } catch {
++        this.unknown = true
++        release()
++      }
++      return result
++    } catch (error) { release(); throw error }
++  }
++  freeze(token: string): void {
++    if (!token) throw new Error('desktop update: missing admission token')
++    if (this.owner !== undefined && this.owner !== token) throw new Error('desktop update: admission already owned')
++    this.owner = token
++  }
++  release(token: string): boolean {
++    if (this.owner !== token) return false
++    this.owner = undefined
++    for (const listener of this.listeners) {
++      try { listener() } catch { /* A failed observer must not leave other producers frozen. */ }
++    }
++    return true
++  }
++  onResume(listener: () => void): () => void {
++    this.listeners.add(listener)
++    return () => { this.listeners.delete(listener) }
++  }
++}
+diff --git a/packages/core/agent/src/index.ts b/packages/core/agent/src/index.ts
+--- a/packages/core/agent/src/index.ts
++++ b/packages/core/agent/src/index.ts
+@@ -12,6 +12,7 @@
+ import { scopeTarget } from '@deepseek-ai/dsh-scope'
+ import type { Scoped } from '@deepseek-ai/dsh-scope'
+ import type { SessionEvent, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
++import { UpdateAdmissionGate } from './update-admission.ts'
+ import { installTurnArchiveAdmission } from './archive-admission.ts'
+ import type { Agent } from './types.ts'
+ import type { AgentOptions, SessionStartSource } from './runtime-types.ts'
+@@ -243,6 +244,7 @@
+  * nested lineage that starts an owning-fiber unload is excluded from its own drain.
+  */
+ export class AgentRegistry extends Service {
++  readonly updateAdmission: UpdateAdmissionGate = new UpdateAdmissionGate()
+   private store = new Map<SessionId, AgentEntry>()
+   private factory: FactorySlot | undefined
+   private readonly initiators = new AsyncLocalStorage<Agent | undefined>()
+@@ -391,15 +393,17 @@
+    * @returns the handle after setup, rollback-covered publication, and loop start complete.
+    */
+   async create(options: CreateAgentOptions): Promise<AgentHandle> {
+-    const ownerCtx = this.ctx
+-    // Re-trace a Service-backed factory through the accessing context
+-    // explicitly. This preserves AgentLoop's dependency origin while binding
+-    // its effects to ownerCtx; plain factories receive ownerCtx as an explicit
+-    // capability and need no Cordis tracker magic.
+-    const { target } = this.requireFactory()
+-    const receiver = getTraceable(ownerCtx, target)
+-    // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+-    return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
++    return this.updateAdmission.run(async () => {
++      const ownerCtx = this.ctx
++      // Re-trace a Service-backed factory through the accessing context
++      // explicitly. This preserves AgentLoop's dependency origin while binding
++      // its effects to ownerCtx; plain factories receive ownerCtx as an explicit
++      // capability and need no Cordis tracker magic.
++      const { target } = this.requireFactory()
++      const receiver = getTraceable(ownerCtx, target)
++      // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
++      return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
++    })
+   }
+ 
+   /**
+@@ -410,11 +414,13 @@
+    * @returns the handle after setup, rollback-covered publication, and loop start complete.
+    */
+   async resume(options: ResumeAgentOptions): Promise<AgentHandle> {
+-    const ownerCtx = this.ctx
+-    const { target } = this.requireFactory()
+-    const receiver = getTraceable(ownerCtx, target)
+-    // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
+-    return Reflect.apply(target.resume, receiver, [ownerCtx, options])
++    return this.updateAdmission.run(async () => {
++      const ownerCtx = this.ctx
++      const { target } = this.requireFactory()
++      const receiver = getTraceable(ownerCtx, target)
++      // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
++      return Reflect.apply(target.resume, receiver, [ownerCtx, options])
++    })
+   }
+ 
+   /**
+@@ -459,40 +465,42 @@
+    *   creation dispatch settles.
+    */
+   enter(agent: Agent, owner: Agent | undefined): () => void {
+-    const id = agent.id
+-    if (id !== agent.session.id) {
+-      throw new Error(`agent id "${id}" does not match session id "${agent.session.id}"`)
+-    }
+-    const carrier = scopeTarget(agent, agent)
+-    // This is the authoritative collision boundary. Concurrent create/resume
+-    // operations may both prepare, but only one exact entry can publish.
+-    if (this.store.has(id)) throw new Error(`agent "${id}" is already registered`)
+-    const entry: AgentEntry = {
+-      id,
+-      agent,
+-      owner,
+-      carrier,
+-      announced: false,
+-      announcing: false,
+-      detachRequested: false,
+-    }
+-    this.store.set(id, entry)
+-    let entered = true
+-    const detach = (): void => {
+-      if (!entered) return
+-      entered = false
+-      // Every callback reached by this creation dispatch must observe the same
+-      // live entry, and disposal must follow creation. A listener may own
+-      // the advanced detach capability, so make that ordering structural:
+-      // visibility and the paired disposal are deferred until announce()'s
+-      // serial dispatch has settled.
+-      if (entry.announcing) {
+-        entry.detachRequested = true
+-        return
+-      }
+-      this.detachEntered(entry)
+-    }
+-    return detach
++    return this.updateAdmission.run(() => {
++      const id = agent.id
++      if (id !== agent.session.id) {
++        throw new Error(`agent id "${id}" does not match session id "${agent.session.id}"`)
++      }
++      const carrier = scopeTarget(agent, agent)
++      // This is the authoritative collision boundary. Concurrent create/resume
++      // operations may both prepare, but only one exact entry can publish.
++      if (this.store.has(id)) throw new Error(`agent "${id}" is already registered`)
++      const entry: AgentEntry = {
++        id,
++        agent,
++        owner,
++        carrier,
++        announced: false,
++        announcing: false,
++        detachRequested: false,
++      }
++      this.store.set(id, entry)
++      let entered = true
++      const detach = (): void => {
++        if (!entered) return
++        entered = false
++        // Every callback reached by this creation dispatch must observe the same
++        // live entry, and disposal must follow creation. A listener may own
++        // the advanced detach capability, so make that ordering structural:
++        // visibility and the paired disposal are deferred until announce()'s
++        // serial dispatch has settled.
++        if (entry.announcing) {
++          entry.detachRequested = true
++          return
++        }
++        this.detachEntered(entry)
++      }
++      return detach
++    })
+   }
+ 
+   /** Remove one exact entered agent and emit its paired disposal when announced. */
+@@ -623,35 +631,37 @@
+ 
+   /** Establish one tracked initiator or clearing boundary. */
+   private runWithInitiator<T>(agent: Agent | undefined, operation: () => T): T {
+-    if (this.initiatorState !== 'active') throw new Error(DISPOSED_INITIATOR_MESSAGE)
+-    const run: InitiatorRun = {
+-      active: true,
+-      parent: this.initiatorRuns.getStore(),
+-    }
+-    this.activeInitiatorRuns += 1
+-    let result: T
+-    try {
+-      result = this.initiatorRuns.run(run, () => this.initiators.run(agent, operation))
+-    } catch (error: unknown) {
+-      this.releaseInitiatorRun(run)
+-      throw error
+-    }
+-    if (isPromise(result)) {
++    return this.updateAdmission.run(() => {
++      if (this.initiatorState !== 'active') throw new Error(DISPOSED_INITIATOR_MESSAGE)
++      const run: InitiatorRun = {
++        active: true,
++        parent: this.initiatorRuns.getStore(),
++      }
++      this.activeInitiatorRuns += 1
++      let result: T
+       try {
+-        void Promise.prototype.then.call(
+-          result,
+-          () => { this.releaseInitiatorRun(run) },
+-          () => { this.releaseInitiatorRun(run) },
+-        )
+-      } catch {
+-        // A branded Promise may expose a failing @@species. Observer setup did
+-        // not attach, so preserve the exact return without leaking the run.
++        result = this.initiatorRuns.run(run, () => this.initiators.run(agent, operation))
++      } catch (error: unknown) {
+         this.releaseInitiatorRun(run)
+-      }
+-    } else {
+-      this.releaseInitiatorRun(run)
+-    }
+-    return result
++        throw error
++      }
++      if (isPromise(result)) {
++        try {
++          void Promise.prototype.then.call(
++            result,
++            () => { this.releaseInitiatorRun(run) },
++            () => { this.releaseInitiatorRun(run) },
++          )
++        } catch {
++          // A branded Promise may expose a failing @@species. Observer setup did
++          // not attach, so preserve the exact return without leaking the run.
++          this.releaseInitiatorRun(run)
++        }
++      } else {
++        this.releaseInitiatorRun(run)
++      }
++      return result
++    })
+   }
+ 
+   /** Whether one unloading fiber owns this service's lifecycle. */
+diff --git a/packages/core/agent-loop/src/index.ts b/packages/core/agent-loop/src/index.ts
+--- a/packages/core/agent-loop/src/index.ts
++++ b/packages/core/agent-loop/src/index.ts
+@@ -451,18 +451,20 @@
+     agentOptions: AgentOptions,
+     meta: Pick<SessionHeader, 'cwd'>,
+   ): Promise<void> {
+-    await this.waitForDrainingConfiguredIdentity(ownerCtx, sessionId)
+-    if (!this.ownership.isActive()) return
+-    try {
+-      await this.resumeWith(ownerCtx, persistence, { resumeSessionId: sessionId, agentOptions })
+-      return
+-    } catch (error: unknown) {
++    return this.ctx.agents.updateAdmission.run(async () => {
++      await this.waitForDrainingConfiguredIdentity(ownerCtx, sessionId)
+       if (!this.ownership.isActive()) return
+-      // Only a genuinely absent stored session falls back to first creation;
+-      // corruption, ownership conflicts, and backend failures stay loud.
+-      if (!(error instanceof SessionPersistenceNotFoundError)) throw error
+-    }
+-    await this.create(sessionId, agentOptions, meta)
++      try {
++        await this.resumeWith(ownerCtx, persistence, { resumeSessionId: sessionId, agentOptions })
++        return
++      } catch (error: unknown) {
++        if (!this.ownership.isActive()) return
++        // Only a genuinely absent stored session falls back to first creation;
++        // corruption, ownership conflicts, and backend failures stay loud.
++        if (!(error instanceof SessionPersistenceNotFoundError)) throw error
++      }
++      await this.create(sessionId, agentOptions, meta)
++    })
+   }
+ 
+   /** Wait for a draining same-id lifecycle to finish registry teardown. */
+@@ -686,19 +688,21 @@
+    * @returns the published running agent.
+    */
+   async create(id: SessionId, options: AgentOptions = {}, meta: Pick<SessionHeader, 'cwd'> = {}): Promise<Agent> {
+-    using preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { meta }))
+-    const stored = await this.createStoredSession(preparation.session)
+-    let prepared: PreparedAgent
+-    try {
+-      prepared = this.prepare(this.ctx, id, options, preparation.session, undefined, stored?.handle)
+-    } catch (error: unknown) {
+-      await stored?.handle.close().catch(() => {})
+-      throw error
+-    }
+-    return (await this.initializeAgent(prepared, async () => {
+-      await this.appendUnstoredSuffix(stored, preparation.session)
+-      return await prepared.publish('startup')
+-    })).agent
++    return this.ctx.agents.updateAdmission.run(async () => {
++      using preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { meta }))
++      const stored = await this.createStoredSession(preparation.session)
++      let prepared: PreparedAgent
++      try {
++        prepared = this.prepare(this.ctx, id, options, preparation.session, undefined, stored?.handle)
++      } catch (error: unknown) {
++        await stored?.handle.close().catch(() => {})
++        throw error
++      }
++      return (await this.initializeAgent(prepared, async () => {
++        await this.appendUnstoredSuffix(stored, preparation.session)
++        return await prepared.publish('startup')
++      })).agent
++    })
+   }
+ 
+   /**
+@@ -748,42 +752,44 @@
+    * @returns the published handle.
+    */
+   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
+-    const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
+-      ...options.seed === undefined ? {} : { seed: options.seed },
+-      ...options.meta === undefined ? {} : { meta: options.meta },
+-      ...options.inheritedEventCount === undefined ? {} : { inheritedEventCount: options.inheritedEventCount },
+-    }))
+-    const published = (async () => {
+-      let stored: StoredSession | undefined
+-      try {
+-        // raceAbortCall normalizes a pre-aborted or mid-create abort and
+-        // closes a handle that finishes creating after abandonment.
+-        stored = options.signal === undefined
+-          ? await this.createStoredSession(preparation.session)
+-          : await raceAbortCall(
+-            () => this.createStoredSession(preparation.session, options.signal),
+-            options.signal,
+-            options.sessionId,
+-            (abandoned) => { void abandoned?.handle.close().catch(() => {}) },
+-          )
+-      } catch (error: unknown) {
+-        preparation[Symbol.dispose]()
+-        throw error
+-      }
+-      return this.setupAndPublish(
+-        ownerCtx,
+-        options.sessionId,
+-        preparation,
+-        options.agentOptions ?? {},
+-        options.setup,
+-        options.signal,
+-        'startup',
+-        stored,
+-        options.parentAgent,
+-      )
+-    })()
+-    this.ownership.trackWrapper(published)
+-    return published
++    return this.ctx.agents.updateAdmission.run(async () => {
++      const preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(options.sessionId, {
++        ...options.seed === undefined ? {} : { seed: options.seed },
++        ...options.meta === undefined ? {} : { meta: options.meta },
++        ...options.inheritedEventCount === undefined ? {} : { inheritedEventCount: options.inheritedEventCount },
++      }))
++      const published = (async () => {
++        let stored: StoredSession | undefined
++        try {
++          // raceAbortCall normalizes a pre-aborted or mid-create abort and
++          // closes a handle that finishes creating after abandonment.
++          stored = options.signal === undefined
++            ? await this.createStoredSession(preparation.session)
++            : await raceAbortCall(
++              () => this.createStoredSession(preparation.session, options.signal),
++              options.signal,
++              options.sessionId,
++              (abandoned) => { void abandoned?.handle.close().catch(() => {}) },
++            )
++        } catch (error: unknown) {
++          preparation[Symbol.dispose]()
++          throw error
++        }
++        return this.setupAndPublish(
++          ownerCtx,
++          options.sessionId,
++          preparation,
++          options.agentOptions ?? {},
++          options.setup,
++          options.signal,
++          'startup',
++          stored,
++          options.parentAgent,
++        )
++      })()
++      this.ownership.trackWrapper(published)
++      return published
++    })
+   }
+ 
+   /** Prepare one Agent around an acquired Session, run setup, and publish it. */
+@@ -841,11 +847,13 @@
+    * @returns the published handle.
+    */
+   async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
+-    const persistence = this.runtime.ctx.get('sessionPersistence')
+-    if (persistence === undefined) {
+-      throw new Error('cannot resume: session persistence is not configured (load a dsh-session-persistence backend)')
+-    }
+-    return this.resumeWith(ownerCtx, persistence, options)
++    return this.ctx.agents.updateAdmission.run(async () => {
++      const persistence = this.runtime.ctx.get('sessionPersistence')
++      if (persistence === undefined) {
++        throw new Error('cannot resume: session persistence is not configured (load a dsh-session-persistence backend)')
++      }
++      return this.resumeWith(ownerCtx, persistence, options)
++    })
+   }
+ 
+   /** Resume through an explicit persistence handle used by the deferred config path. */
+@@ -854,75 +862,77 @@
+     persistence: SessionPersistence,
+     options: ResumeAgentOptions,
+   ): Promise<AgentHandle> {
+-    const id = options.resumeSessionId
+-    const published = (async () => {
+-      // The open and read may outlive their owner: race them against caller
+-      // cancellation, owner-fiber unload, and factory teardown so a
+-      // never-settling backend cannot pin the identity.
+-      const ownerAbort = new AbortController()
+-      const unfollowOwner = ownerCtx.effect(() => () => {
+-        ownerAbort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
+-      }, `agentLoop.resume-load(${id})`)
+-      const fused = AbortSignal.any([
+-        ...options.signal === undefined ? [] : [options.signal],
+-        ownerAbort.signal,
+-        this.ownership.signal,
+-      ])
+-      let handle: SessionHandle | undefined
+-      let stored: StoredSession | undefined
+-      let preparation: SessionPreparation | undefined
+-      try {
++    return this.ctx.agents.updateAdmission.run(() => {
++      const id = options.resumeSessionId
++      const published = (async () => {
++        // The open and read may outlive their owner: race them against caller
++        // cancellation, owner-fiber unload, and factory teardown so a
++        // never-settling backend cannot pin the identity.
++        const ownerAbort = new AbortController()
++        const unfollowOwner = ownerCtx.effect(() => () => {
++          ownerAbort.abort(new Error(`agent "${id}" setup aborted: owner disposed during setup`))
++        }, `agentLoop.resume-load(${id})`)
++        const fused = AbortSignal.any([
++          ...options.signal === undefined ? [] : [options.signal],
++          ownerAbort.signal,
++          this.ownership.signal,
++        ])
++        let handle: SessionHandle | undefined
++        let stored: StoredSession | undefined
++        let preparation: SessionPreparation | undefined
+         try {
+-          // Taking write ownership FIRST excludes a concurrent resume of the
+-          // same id (in this process, a live agent's handle holds the claim).
+-          handle = await raceAbortCall(
+-            () => persistence.open(id, 'write', { signal: fused }),
+-            fused,
++          try {
++            // Taking write ownership FIRST excludes a concurrent resume of the
++            // same id (in this process, a live agent's handle holds the claim).
++            handle = await raceAbortCall(
++              () => persistence.open(id, 'write', { signal: fused }),
++              fused,
++              id,
++              (abandoned) => { void abandoned.close() },
++            )
++            // Semantic crash repair is the agent layer's job: persistence hands
++            // back the physically valid log; an interrupted final turn receives
++            // synthetic closers (missing tool errors, step/end, turn/end) that
++            // are appended through the same handle as an ordinary batch.
++            const coldRead = await handle.read(0, undefined, { signal: fused })
++            fused.throwIfAborted()
++            const persisted = coldRead.events
++            const closers = interruptedTurnClosers(persisted)
++            if (closers.length > 0) await handle.append(closers)
++            preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, {
++              seed: [...persisted, ...closers],
++              meta: structuredClone(handle.header),
++              inheritedEventCount: handle.inheritedEventCount,
++              eventState: coldRead.eventState,
++            }))
++            stored = { handle, storedCount: persisted.length + closers.length }
++            await this.appendUnstoredSuffix(stored, preparation.session)
++          } finally {
++            await unfollowOwner()
++          }
++          ownerCtx.fiber.assertActive()
++          if (!this.ownership.isActive()) throw new Error('agent loop is not active')
++          const owned = stored
++          handle = undefined // ownership passes to setupAndPublish/prepare
++          return await this.setupAndPublish(
++            ownerCtx,
+             id,
+-            (abandoned) => { void abandoned.close() },
++            preparation,
++            options.agentOptions ?? {},
++            options.setup,
++            options.signal,
++            'resume',
++            owned,
++            options.parentAgent,
+           )
+-          // Semantic crash repair is the agent layer's job: persistence hands
+-          // back the physically valid log; an interrupted final turn receives
+-          // synthetic closers (missing tool errors, step/end, turn/end) that
+-          // are appended through the same handle as an ordinary batch.
+-          const coldRead = await handle.read(0, undefined, { signal: fused })
+-          fused.throwIfAborted()
+-          const persisted = coldRead.events
+-          const closers = interruptedTurnClosers(persisted)
+-          if (closers.length > 0) await handle.append(closers)
+-          preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, {
+-            seed: [...persisted, ...closers],
+-            meta: structuredClone(handle.header),
+-            inheritedEventCount: handle.inheritedEventCount,
+-            eventState: coldRead.eventState,
+-          }))
+-          stored = { handle, storedCount: persisted.length + closers.length }
+-          await this.appendUnstoredSuffix(stored, preparation.session)
+         } finally {
+-          await unfollowOwner()
+-        }
+-        ownerCtx.fiber.assertActive()
+-        if (!this.ownership.isActive()) throw new Error('agent loop is not active')
+-        const owned = stored
+-        handle = undefined // ownership passes to setupAndPublish/prepare
+-        return await this.setupAndPublish(
+-          ownerCtx,
+-          id,
+-          preparation,
+-          options.agentOptions ?? {},
+-          options.setup,
+-          options.signal,
+-          'resume',
+-          owned,
+-          options.parentAgent,
+-        )
+-      } finally {
+-        preparation?.[Symbol.dispose]()
+-        await handle?.close().catch(() => {})
+-      }
+-    })()
+-    this.ownership.trackWrapper(published)
+-    return published
++          preparation?.[Symbol.dispose]()
++          await handle?.close().catch(() => {})
++        }
++      })()
++      this.ownership.trackWrapper(published)
++      return published
++    })
+   }
+ }
+ 
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -129,13 +129,15 @@
+     this.dispatch = agentEvents(loopCtx, this)
+     this.scope = createScope(loopCtx, this)
+     this.ctx = this.scope.ctx
+-    this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch)
++    this.inbox = new ReactLoopInbox(this.ctx.sessionProjections, session, this.dispatch, this.ctx.agents.updateAdmission)
+     /* v8 ignore next -- the loop registers its own turnBoundary unit, so the key is always present */
+     const lastTurn = this.loopCtx.sessionProjections.stateOf(session, 'turnBoundary')?.lastTurn ?? 0
+     this.phase = { kind: 'idle', lastTurn }
+     this.runtimeContext = new RuntimeContextProjection(this.ctx, session)
+     this.systemPrompt = new SystemPromptProjection(session)
+   }
++
++  get updateAdmission(): Context['agents']['updateAdmission'] { return this.ctx.agents.updateAdmission }
+ 
+   get status(): AgentStatus {
+     return this.phase.kind === 'idle' || this.phase.kind === 'maintenance' ? 'idle' : 'running'
+@@ -152,12 +154,14 @@
+   }
+ 
+   send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
+-    // Waking input cannot join an aborted activity, so it starts the next turn.
+-    // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
+-    const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
+-    const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
+-    this.inbox.splice(resolvedTarget, Infinity, 0, [message])
+-    if (wakeup) this.wakeDriver(wakingAfterAbort)
++    return this.ctx.agents.updateAdmission.run(() => {
++      // Waking input cannot join an aborted activity, so it starts the next turn.
++      // Captured before the insertion so a reentrant cancel from a splice observer cannot reclassify it.
++      const wakingAfterAbort = wakeup && this.phase.kind !== 'idle' && this.phase.abort.signal.aborted
++      const resolvedTarget = wakingAfterAbort ? 'next-turn' : target
++      this.inbox.splice(resolvedTarget, Infinity, 0, [message])
++      if (wakeup) this.wakeDriver(wakingAfterAbort)
++    })
+   }
+ 
+   followup(input: UserMessage): void {
+@@ -181,26 +185,28 @@
+   }
+ 
+   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
+-    if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
+-    const done = Promise.withResolvers<void>()
+-    const maintenance: Phase = {
+-      kind: 'maintenance',
+-      abort: new AbortController(),
+-      lastTurn: this.phase.lastTurn,
+-      wakeRequested: false,
+-    }
+-    this.setPhase(maintenance)
+-    this.activityDone = done.promise
+-    return (async () => {
+-      try {
+-        return await job(maintenance.abort.signal)
+-      } finally {
+-        this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
+-        const cause = abortedCancelCause(maintenance.abort.signal)
+-        if (cause?.kind !== 'disposed' && maintenance.wakeRequested && this.inbox.hasPending) this.wakeDriver()
+-        done.resolve()
+-      }
+-    })()
++    return this.ctx.agents.updateAdmission.run(() => {
++      if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
++      const done = Promise.withResolvers<void>()
++      const maintenance: Phase = {
++        kind: 'maintenance',
++        abort: new AbortController(),
++        lastTurn: this.phase.lastTurn,
++        wakeRequested: false,
++      }
++      this.setPhase(maintenance)
++      this.activityDone = done.promise
++      return (async () => {
++        try {
++          return await job(maintenance.abort.signal)
++        } finally {
++          this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
++          const cause = abortedCancelCause(maintenance.abort.signal)
++          if (cause?.kind !== 'disposed' && maintenance.wakeRequested && this.inbox.hasPending) this.wakeDriver()
++          done.resolve()
++        }
++      })()
++    })
+   }
+ 
+   /**
+@@ -212,26 +218,28 @@
+    *   the inbox insertion so a reentrant cancel cannot reclassify it.
+    */
+   private wakeDriver(wakeAfterAbort = false): void {
+-    if (this.phase.kind !== 'idle') {
+-      // Maintenance and aborted drivers cannot deliver the wake: latch it for
+-      // replay at convergence. Live drivers claim queued work themselves;
+-      // disposal never latches, so teardown waits on no model turn.
+-      const reason = abortedCancelCause(this.phase.abort.signal)
+-      if (reason?.kind !== 'disposed' && (this.phase.kind === 'maintenance' || wakeAfterAbort)) {
+-        this.phase.wakeRequested = true
+-      }
+-      return
+-    }
+-    const driver = Promise.withResolvers<void>()
+-    this.activityDone = driver.promise
+-    this.setPhase({
+-      kind: 'running',
+-      abort: new AbortController(),
+-      turn: this.phase.lastTurn,
+-      step: 0,
+-      wakeRequested: false,
++    return this.ctx.agents.updateAdmission.run(() => {
++      if (this.phase.kind !== 'idle') {
++        // Maintenance and aborted drivers cannot deliver the wake: latch it for
++        // replay at convergence. Live drivers claim queued work themselves;
++        // disposal never latches, so teardown waits on no model turn.
++        const reason = abortedCancelCause(this.phase.abort.signal)
++        if (reason?.kind !== 'disposed' && (this.phase.kind === 'maintenance' || wakeAfterAbort)) {
++          this.phase.wakeRequested = true
++        }
++        return
++      }
++      const driver = Promise.withResolvers<void>()
++      this.activityDone = driver.promise
++      this.setPhase({
++        kind: 'running',
++        abort: new AbortController(),
++        turn: this.phase.lastTurn,
++        step: 0,
++        wakeRequested: false,
++      })
++      this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
+     })
+-    this.loopCtx.agents.withInitiator(this, () => this.kick()).then(driver.resolve, driver.reject)
+   }
+ 
+   async whenIdle(): Promise<void> {
+diff --git a/packages/core/agent-loop/src/inbox.ts b/packages/core/agent-loop/src/inbox.ts
+--- a/packages/core/agent-loop/src/inbox.ts
++++ b/packages/core/agent-loop/src/inbox.ts
+@@ -76,6 +76,7 @@
+     private readonly projections: SessionProjectionRegistry,
+     private readonly session: Session,
+     private readonly dispatch: AgentEventDispatch,
++    private readonly admission?: { run<T>(operation: () => T): T },
+   ) {}
+ 
+   /** Prompts awaiting individual turns. */
+@@ -202,43 +203,45 @@
+     inserted: UserMessage[],
+     discardRemoved: boolean,
+   ): UserMessage[] {
+-    const state = this.current()
+-    const inbox = state[target]
+-    const truncatedStart = Math.trunc(start)
+-    const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart
+-    const actualStart = offset < 0
+-      ? Math.max(inbox.length + offset, 0)
+-      : Math.min(offset, inbox.length)
+-    const truncatedDeleteCount = Math.trunc(deleteCount)
+-    const actualDeleteCount = Math.min(
+-      Math.max(Number.isNaN(truncatedDeleteCount) ? 0 : truncatedDeleteCount, 0),
+-      inbox.length - actualStart,
+-    )
+-    if (actualDeleteCount === 0 && inserted.length === 0) return []
+-    const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted)
+-    const ids = new Set<string>()
+-    for (const message of target === 'next-turn'
+-      ? [...candidate, ...state['next-step']]
+-      : [...state['next-turn'], ...candidate]) {
+-      if (ids.has(message.id)) throw new Error(`message "${message.id}" is already pending`)
+-      ids.add(message.id)
+-    }
+-    const outcome = discardRemoved && actualDeleteCount > 0 ? 'canceled' as const : undefined
+-    const splice: SessionEventMap['agent/inbox/spliced'] = {
+-      target,
+-      start: actualStart,
+-      ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
+-      inserted,
+-      ...(outcome === undefined ? {} : { outcome }),
+-    }
+-    const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
+-    const event = this.session.append('agent/inbox/spliced', splice)
+-    if (discardRemoved) {
+-      for (const message of removed) this.dispatch.emit('agent/inbox/discarded', { message })
+-    }
+-    for (const message of event.data.inserted) {
+-      this.dispatch.emit('agent/inbox/inserted', { message })
+-    }
+-    return removed
++    return ((inserted.length > 0 ? this.admission : undefined) ?? { run: <T>(operation: () => T): T => operation() }).run(() => {
++      const state = this.current()
++      const inbox = state[target]
++      const truncatedStart = Math.trunc(start)
++      const offset = Number.isNaN(truncatedStart) ? 0 : truncatedStart
++      const actualStart = offset < 0
++        ? Math.max(inbox.length + offset, 0)
++        : Math.min(offset, inbox.length)
++      const truncatedDeleteCount = Math.trunc(deleteCount)
++      const actualDeleteCount = Math.min(
++        Math.max(Number.isNaN(truncatedDeleteCount) ? 0 : truncatedDeleteCount, 0),
++        inbox.length - actualStart,
++      )
++      if (actualDeleteCount === 0 && inserted.length === 0) return []
++      const candidate = inbox.toSpliced(actualStart, actualDeleteCount, ...inserted)
++      const ids = new Set<string>()
++      for (const message of target === 'next-turn'
++        ? [...candidate, ...state['next-step']]
++        : [...state['next-turn'], ...candidate]) {
++        if (ids.has(message.id)) throw new Error(`message "${message.id}" is already pending`)
++        ids.add(message.id)
++      }
++      const outcome = discardRemoved && actualDeleteCount > 0 ? 'canceled' as const : undefined
++      const splice: SessionEventMap['agent/inbox/spliced'] = {
++        target,
++        start: actualStart,
++        ...(actualDeleteCount === 0 ? {} : { removedCount: actualDeleteCount }),
++        inserted,
++        ...(outcome === undefined ? {} : { outcome }),
++      }
++      const removed = inbox.slice(actualStart, actualStart + actualDeleteCount)
++      const event = this.session.append('agent/inbox/spliced', splice)
++      if (discardRemoved) {
++        for (const message of removed) this.dispatch.emit('agent/inbox/discarded', { message })
++      }
++      for (const message of event.data.inserted) {
++        this.dispatch.emit('agent/inbox/inserted', { message })
++      }
++      return removed
++    })
+   }
+ }
+diff --git a/packages/jobs/jobs/src/index.ts b/packages/jobs/jobs/src/index.ts
+--- a/packages/jobs/jobs/src/index.ts
++++ b/packages/jobs/jobs/src/index.ts
+@@ -100,6 +100,8 @@
+   }
+ 
+   /** Lifecycle and output events, filtered per subscription. */
++  get updateAdmission(): unknown { return undefined }
++
+   abstract readonly events: JobEvents
+ 
+   /**
+diff --git a/packages/jobs/jobs-local/src/index.ts b/packages/jobs/jobs-local/src/index.ts
+--- a/packages/jobs/jobs-local/src/index.ts
++++ b/packages/jobs/jobs-local/src/index.ts
+@@ -128,6 +128,7 @@
+  * semantics this implementation honors.
+  */
+ export class LocalJobRegistry extends JobRegistry {
++  override get updateAdmission(): Context['agents']['updateAdmission'] { return this.ctx.agents.updateAdmission }
+   static Config: z<Config> = z.object({
+     maxConcurrentJobsPerOwner: z.number()
+       .step(1)
+@@ -205,106 +206,108 @@
+   }
+ 
+   start(spec: JobSpec): JobId {
+-    const owner = this.resolveOwner(spec.owner)
+-    if (!this.servesOwner(owner)) {
+-      throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
+-    }
+-    if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
+-    if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
+-    if (spec.outputLimitBytes !== undefined
+-      && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
+-      throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
+-    }
+-    if (owner !== undefined) this.ensureOwnerCleanup(owner)
+-
+-    const active = this.activeJobCount(owner)
+-    if (active >= this.maxConcurrentJobsPerOwner) {
+-      throw new Error(
+-        `background job limit reached for this owner (limit: ${this.maxConcurrentJobsPerOwner}); use job_kill to stop an unneeded job, wait for it to finish, then retry`,
++    return this.updateAdmission.run(() => {
++      const owner = this.resolveOwner(spec.owner)
++      if (!this.servesOwner(owner)) {
++        throw new Error('background jobs unavailable: no job controller serves this agent (load @deepseek-ai/dsh-tool-jobs in its composition)')
++      }
++      if (spec.kind.length === 0) throw new Error('invalid job kind: expected a non-empty string')
++      if (spec.label.length === 0) throw new Error('invalid job label: expected a non-empty string')
++      if (spec.outputLimitBytes !== undefined
++        && (!Number.isSafeInteger(spec.outputLimitBytes) || spec.outputLimitBytes <= 0)) {
++        throw new Error(`invalid outputLimitBytes: expected a positive safe integer, got ${JSON.stringify(spec.outputLimitBytes)}`)
++      }
++      if (owner !== undefined) this.ensureOwnerCleanup(owner)
++
++      const active = this.activeJobCount(owner)
++      if (active >= this.maxConcurrentJobsPerOwner) {
++        throw new Error(
++          `background job limit reached for this owner (limit: ${this.maxConcurrentJobsPerOwner}); use job_kill to stop an unneeded job, wait for it to finish, then retry`,
++        )
++      }
++
++      // The producer uses the same short UUID identity as controls and durable lifecycle records.
++      // Retry a collision while this registry still holds an earlier id.
++      let id: JobId
++      do {
++        id = JobId(`${spec.kind}-${randomUUID().replaceAll('-', '').slice(0, 16)}`)
++      } while (this.store.has(id))
++      const toolCall = spec.toolCall === undefined ? undefined : { ...spec.toolCall }
++      const ring = new OutputRing()
++      const state: ProducerState = { progress: undefined, job: undefined }
++      const handle: JobHandle = {
++        id,
++        append: (text, options) => { this.appendRing(state, ring, text, options, 'producer') },
++        updateProgress: (line) => { this.updateProgress(state, line) },
++      }
++      const hooks = spec.run(handle)
++
++      let markSettled!: () => void
++      const settled = new Promise<void>((resolve) => { markSettled = resolve })
++      const job: TrackedJob = {
++        id,
++        toolCall,
++        kind: spec.kind,
++        label: spec.label,
++        outputLimitBytes: spec.outputLimitBytes,
++        owner,
++        cancel: hooks.cancel.bind(hooks),
++        status: 'running',
++        ring,
++        modelCursor: 0,
++        resultDelivered: false,
++        state,
++        detail: undefined,
++        result: undefined,
++        startedAt: Date.now(),
++        finishedAt: undefined,
++        killReason: undefined,
++        settleCause: undefined,
++        settled,
++        markSettled,
++        waitResolvers: new Set(),
++        pump: undefined,
++        spillPaths: [],
++      }
++      // Binding the shared producer state is the commit: writes staged inside
++      // the starter are already in the ring and `state`, and every later handle
++      // call reaches the registered record for its terminal checks and signals.
++      state.job = job
++      this.store.set(id, job)
++      this.recordSessionEvent(job)
++      // Registration is complete and cannot fail from here, so the visible set
++      // has genuinely changed. The announcement precedes the pump because the
++      // pump drains its sources once synchronously, and that drain may append
++      // and announce output: a job's first event is always `registered`.
++      this.emit({ type: 'registered', job: this.view(job) }, owner)
++
++      // The producer's settlement or a registry-forced one ends the pump; the
++      // pump's final drain then lands before this registry trims the ring.
++      const producerDone = hooks.done.then(
++        outcome => ({ outcome, producerReported: true }),
++        (error: unknown): { outcome: JobOutcome; producerReported: boolean } => {
++          // Contain a producer contract violation (`done` rejected) so cleanup and waiters cannot hang.
++          this.selfCtx.logger.warn(`jobs: job ${job.id} producer done promise rejected (producer contract violation): ${String(error)}`)
++          return { outcome: { status: 'failed', detail: String(error) }, producerReported: false }
++        },
+       )
+-    }
+-
+-    // The producer uses the same short UUID identity as controls and durable lifecycle records.
+-    // Retry a collision while this registry still holds an earlier id.
+-    let id: JobId
+-    do {
+-      id = JobId(`${spec.kind}-${randomUUID().replaceAll('-', '').slice(0, 16)}`)
+-    } while (this.store.has(id))
+-    const toolCall = spec.toolCall === undefined ? undefined : { ...spec.toolCall }
+-    const ring = new OutputRing()
+-    const state: ProducerState = { progress: undefined, job: undefined }
+-    const handle: JobHandle = {
+-      id,
+-      append: (text, options) => { this.appendRing(state, ring, text, options, 'producer') },
+-      updateProgress: (line) => { this.updateProgress(state, line) },
+-    }
+-    const hooks = spec.run(handle)
+-
+-    let markSettled!: () => void
+-    const settled = new Promise<void>((resolve) => { markSettled = resolve })
+-    const job: TrackedJob = {
+-      id,
+-      toolCall,
+-      kind: spec.kind,
+-      label: spec.label,
+-      outputLimitBytes: spec.outputLimitBytes,
+-      owner,
+-      cancel: hooks.cancel.bind(hooks),
+-      status: 'running',
+-      ring,
+-      modelCursor: 0,
+-      resultDelivered: false,
+-      state,
+-      detail: undefined,
+-      result: undefined,
+-      startedAt: Date.now(),
+-      finishedAt: undefined,
+-      killReason: undefined,
+-      settleCause: undefined,
+-      settled,
+-      markSettled,
+-      waitResolvers: new Set(),
+-      pump: undefined,
+-      spillPaths: [],
+-    }
+-    // Binding the shared producer state is the commit: writes staged inside
+-    // the starter are already in the ring and `state`, and every later handle
+-    // call reaches the registered record for its terminal checks and signals.
+-    state.job = job
+-    this.store.set(id, job)
+-    this.recordSessionEvent(job)
+-    // Registration is complete and cannot fail from here, so the visible set
+-    // has genuinely changed. The announcement precedes the pump because the
+-    // pump drains its sources once synchronously, and that drain may append
+-    // and announce output: a job's first event is always `registered`.
+-    this.emit({ type: 'registered', job: this.view(job) }, owner)
+-
+-    // The producer's settlement or a registry-forced one ends the pump; the
+-    // pump's final drain then lands before this registry trims the ring.
+-    const producerDone = hooks.done.then(
+-      outcome => ({ outcome, producerReported: true }),
+-      (error: unknown): { outcome: JobOutcome; producerReported: boolean } => {
+-        // Contain a producer contract violation (`done` rejected) so cleanup and waiters cannot hang.
+-        this.selfCtx.logger.warn(`jobs: job ${job.id} producer done promise rejected (producer contract violation): ${String(error)}`)
+-        return { outcome: { status: 'failed', detail: String(error) }, producerReported: false }
+-      },
+-    )
+-    if (spec.output !== undefined && spec.output.length > 0) {
+-      job.pump = startPump(
+-        spec.output.map(source => this.guardSource(job, source)),
+-        {
+-          append: (text, options) => { this.appendRing(state, ring, text, options, 'pump') },
+-          spill: (index, path) => { job.spillPaths[index] = path },
+-        },
+-        this.pumpPollMs,
+-        Promise.race([producerDone, settled]),
+-      )
+-    }
+-    void producerDone.then(async ({ outcome, producerReported }) => {
+-      if (job.pump !== undefined) await job.pump.done
+-      this.settle(job, outcome, job.settleCause ?? 'producer', producerReported)
++      if (spec.output !== undefined && spec.output.length > 0) {
++        job.pump = startPump(
++          spec.output.map(source => this.guardSource(job, source)),
++          {
++            append: (text, options) => { this.appendRing(state, ring, text, options, 'pump') },
++            spill: (index, path) => { job.spillPaths[index] = path },
++          },
++          this.pumpPollMs,
++          Promise.race([producerDone, settled]),
++        )
++      }
++      void producerDone.then(async ({ outcome, producerReported }) => {
++        if (job.pump !== undefined) await job.pump.done
++        this.settle(job, outcome, job.settleCause ?? 'producer', producerReported)
++      })
++      return id
+     })
+-    return id
+   }
+ 
+   list(caller?: SessionId): JobView[] {
+diff --git a/packages/schedule/schedule/src/runtime.ts b/packages/schedule/schedule/src/runtime.ts
+--- a/packages/schedule/schedule/src/runtime.ts
++++ b/packages/schedule/schedule/src/runtime.ts
+@@ -22,6 +22,7 @@
+   private running: Promise<void> | undefined
+   private stopping = false
+   private requested = false
++  private updateDeferred = false
+ 
+   /**
+    * @param ctx - Host services used to resume and enqueue.
+@@ -35,7 +36,14 @@
+     private readonly transact: (work: () => Promise<void>) => Promise<void>,
+     private readonly commit: (task: ScheduleTask) => Promise<void>,
+     private readonly retention: DeliveryRetentionBounds,
+-  ) {}
++  ) {
++    ctx.effect(() => ctx.agents.updateAdmission.onResume(() => {
++      if (this.updateDeferred && !this.stopping) {
++        this.updateDeferred = false
++        this.requestDrive()
++      }
++    }))
++  }
+ 
+   /**
+    * Recompute the nearest obligation after startup or a durable change.
+@@ -55,6 +63,7 @@
+         }
+       })
+     } catch (error: unknown) {
++      this.updateDeferred = this.ctx.agents.updateAdmission.frozen
+       // Ancestor unloading closes initiator admission before runtime cleanup runs.
+       this.requested = false
+       this.ctx.logger.warn(`schedule: dispatch stopped: ${String(error)}`)
+diff --git a/packages/subagent/subagent/src/manager.ts b/packages/subagent/subagent/src/manager.ts
+--- a/packages/subagent/subagent/src/manager.ts
++++ b/packages/subagent/subagent/src/manager.ts
+@@ -377,102 +377,104 @@
+    * @returns the durable child id and accepted initial prompt message id.
+    */
+   async startLocal(spec: SubagentActivationSpec): Promise<SubagentActivation & { messageId: MessageId }> {
+-    const request = spec.request
+-    const parent = request.parent
+-    this.assertAdmitting(parent)
+-    const persistence = spec.delivery === 'caller' ? this.ctx.get('sessionPersistence') : this.requirePersistence()
+-    assertSubagentMaxDepth(request.maxDepth)
+-    const childId = spec.childId ?? brandString<SessionId>(randomUUID())
+-    this.assertChildIdAvailable(childId)
+-    const childDepth = resolveChildDepth(parent, request.maxDepth)
+-    // Snapshot before any await: invalid descriptor JSON rejects the call
+-    // before a child exists, and the detached value is what reaches the log.
+-    const agentOptions = resolveChildAgentOptions(parent, request.agentOptions, childDepth)
+-    const agentProvider = agentOptions.provider
+-    const agentModel = agentOptions.model
+-    const agentReasoningEffort = agentOptions.reasoningEffort
+-    const descriptor = snapshotSubagentDescriptor({
+-      mode: 'continuable',
+-      provider: spec.provider,
+-      label: spec.label,
+-      ...agentProvider !== undefined ? { agentProvider } : {},
+-      ...agentModel !== undefined ? { agentModel } : {},
+-      ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
+-    })
+-    // Capture before the first await: a later parent switch belongs to the
+-    // parent's future, not to this child.
+-    const delegatedPolicies = captureDelegatedPolicyOverrides(parent)
+-
+-    // An idle continuation-managed parent must not settle while a caller is
+-    // still creating its child. A turn-scoped delegation does not need this,
+-    // but the service is also callable outside a turn.
+-    const releaseHold = this.holdOwnership(parent, childId)
+-    try {
+-      const cwd = await this.resolveDirectory(request, spec.signal)
+-      const prepared = await this.host.prepareContinuable(spec.provider, {
+-        sessionId: childId,
+-        cwd,
+-        parent,
+-        signal: spec.signal,
++    return this.ctx.agents.updateAdmission.run(async () => {
++      const request = spec.request
++      const parent = request.parent
++      this.assertAdmitting(parent)
++      const persistence = spec.delivery === 'caller' ? this.ctx.get('sessionPersistence') : this.requirePersistence()
++      assertSubagentMaxDepth(request.maxDepth)
++      const childId = spec.childId ?? brandString<SessionId>(randomUUID())
++      this.assertChildIdAvailable(childId)
++      const childDepth = resolveChildDepth(parent, request.maxDepth)
++      // Snapshot before any await: invalid descriptor JSON rejects the call
++      // before a child exists, and the detached value is what reaches the log.
++      const agentOptions = resolveChildAgentOptions(parent, request.agentOptions, childDepth)
++      const agentProvider = agentOptions.provider
++      const agentModel = agentOptions.model
++      const agentReasoningEffort = agentOptions.reasoningEffort
++      const descriptor = snapshotSubagentDescriptor({
++        mode: 'continuable',
++        provider: spec.provider,
++        label: spec.label,
++        ...agentProvider !== undefined ? { agentProvider } : {},
++        ...agentModel !== undefined ? { agentModel } : {},
++        ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
+       })
+-      spec.signal.throwIfAborted()
+-      this.assertAdmitting(parent)
+-
+-      const inheritedEventCount = SessionLogOffset(prepared.seed?.length ?? 0)
+-      const seed = prepared.seed
+-      let established!: Activation
+-      const messageId = await this.locks.run(childId, async () => {
++      // Capture before the first await: a later parent switch belongs to the
++      // parent's future, not to this child.
++      const delegatedPolicies = captureDelegatedPolicyOverrides(parent)
++
++      // An idle continuation-managed parent must not settle while a caller is
++      // still creating its child. A turn-scoped delegation does not need this,
++      // but the service is also callable outside a turn.
++      const releaseHold = this.holdOwnership(parent, childId)
++      try {
++        const cwd = await this.resolveDirectory(request, spec.signal)
++        const prepared = await this.host.prepareContinuable(spec.provider, {
++          sessionId: childId,
++          cwd,
++          parent,
++          signal: spec.signal,
++        })
+         spec.signal.throwIfAborted()
+         this.assertAdmitting(parent)
+-        this.assertChildIdAvailable(childId)
+-        if (spec.childId !== undefined) {
+-          const persisted = await persistence?.stat(childId, { signal: spec.signal })
++
++        const inheritedEventCount = SessionLogOffset(prepared.seed?.length ?? 0)
++        const seed = prepared.seed
++        let established!: Activation
++        const messageId = await this.locks.run(childId, async () => {
+           spec.signal.throwIfAborted()
+           this.assertAdmitting(parent)
+           this.assertChildIdAvailable(childId)
+-          if (persisted !== undefined) {
+-            throw new SubagentError(`subagent "${childId}" already exists`, 'DUPLICATE_CHILD')
++          if (spec.childId !== undefined) {
++            const persisted = await persistence?.stat(childId, { signal: spec.signal })
++            spec.signal.throwIfAborted()
++            this.assertAdmitting(parent)
++            this.assertChildIdAvailable(childId)
++            if (persisted !== undefined) {
++              throw new SubagentError(`subagent "${childId}" already exists`, 'DUPLICATE_CHILD')
++            }
+           }
+-        }
+-        const activation = await this.materialize({
+-          kind: 'local',
+-          childId,
+-          provider: spec.provider,
+-          parent,
+-          create: {
+-            cwd,
+-            seed,
+-            meta: childSessionMeta(parent, childDepth, prepared.seed !== undefined, request.agentPreset),
+-            inheritedEventCount,
+-            delegatedPolicies,
+-            descriptor,
+-          },
+-          agentOptions,
+-          composition: { agentPreset: request.agentPreset },
+-          signal: spec.signal,
+-          delivery: spec.delivery,
+-          outputSchema: spec.request.outputSchema,
++          const activation = await this.materialize({
++            kind: 'local',
++            childId,
++            provider: spec.provider,
++            parent,
++            create: {
++              cwd,
++              seed,
++              meta: childSessionMeta(parent, childDepth, prepared.seed !== undefined, request.agentPreset),
++              inheritedEventCount,
++              delegatedPolicies,
++              descriptor,
++            },
++            agentOptions,
++            composition: { agentPreset: request.agentPreset },
++            signal: spec.signal,
++            delivery: spec.delivery,
++            outputSchema: spec.request.outputSchema,
++          })
++          established = activation
++          const child = requireLocalActivation(activation).handle.agent
++          const childHeader = child.session.header
++          return await this.submitMaterialized(
++            activation,
++            spec.delivery !== 'caller' && isAdjacentAgentSendMessageTool(this.ctx.get('tools')?.get('send_message', child))
++              ? withContinuableReturnGuidance(parent.id, request.prompt)
++              : request.prompt,
++            { source: { kind: 'user' }, signal: spec.signal, delivery: 'queue' },
++            parent,
++            () => {
++              establishCatalogChild(parent.session, childHeader, descriptor)
++            },
++          )
+         })
+-        established = activation
+-        const child = requireLocalActivation(activation).handle.agent
+-        const childHeader = child.session.header
+-        return await this.submitMaterialized(
+-          activation,
+-          spec.delivery !== 'caller' && isAdjacentAgentSendMessageTool(this.ctx.get('tools')?.get('send_message', child))
+-            ? withContinuableReturnGuidance(parent.id, request.prompt)
+-            : request.prompt,
+-          { source: { kind: 'user' }, signal: spec.signal, delivery: 'queue' },
+-          parent,
+-          () => {
+-            establishCatalogChild(parent.session, childHeader, descriptor)
+-          },
+-        )
+-      })
+-      return { ...this.receipt(established), childId, messageId }
+-    } catch (error: unknown) {
+-      releaseHold()
+-      throw error
+-    }
++        return { ...this.receipt(established), childId, messageId }
++      } catch (error: unknown) {
++        releaseHold()
++        throw error
++      }
++    })
+   }
+ 
+   /**
+@@ -481,44 +483,46 @@
+    * @returns the accepted activation and its result/disposal capabilities.
+    */
+   async startExternal(spec: SubagentActivationSpec): Promise<SubagentActivation> {
+-    const parent = spec.request.parent
+-    this.assertAdmitting(parent)
+-    const pendingId = brandString<SessionId>(randomUUID())
+-    const releaseHold = this.holdOwnership(parent, pendingId)
+-    let activation: Activation | undefined
+-    try {
+-      const cwd = await this.resolveDirectory(spec.request, spec.signal)
+-      activation = await this.materialize({
+-        kind: 'external',
+-        childId: pendingId,
+-        provider: spec.provider,
+-        parent,
+-        signal: spec.signal,
+-        delivery: spec.delivery,
+-        start: signal => this.host.startExternal(spec.provider, {
+-          ...spec.request, cwd, label: spec.label, signal,
+-        }),
+-      })
++    return this.ctx.agents.updateAdmission.run(async () => {
++      const parent = spec.request.parent
+       this.assertAdmitting(parent)
+-      this.assertLiveParent(parent, activation.childId)
+-      spec.signal.throwIfAborted()
+-      if (spec.delivery === 'parent') {
+-        establishExternalCatalogChild(parent.session, activation.childId, spec.label)
+-      }
+-      this.announce(activation)
+-      return this.receipt(activation)
+-    } catch (error: unknown) {
+-      if (activation !== undefined) {
+-        try {
+-          await this.dispose(activation)
+-        } catch (cleanupError: unknown) {
+-          this.ctx.logger.warn(`subagent "${activation.childId}" admission rollback failed: ${failureMessage(cleanupError)}`)
+-        }
+-      }
+-      throw error
+-    } finally {
+-      releaseHold()
+-    }
++      const pendingId = brandString<SessionId>(randomUUID())
++      const releaseHold = this.holdOwnership(parent, pendingId)
++      let activation: Activation | undefined
++      try {
++        const cwd = await this.resolveDirectory(spec.request, spec.signal)
++        activation = await this.materialize({
++          kind: 'external',
++          childId: pendingId,
++          provider: spec.provider,
++          parent,
++          signal: spec.signal,
++          delivery: spec.delivery,
++          start: signal => this.host.startExternal(spec.provider, {
++            ...spec.request, cwd, label: spec.label, signal,
++          }),
++        })
++        this.assertAdmitting(parent)
++        this.assertLiveParent(parent, activation.childId)
++        spec.signal.throwIfAborted()
++        if (spec.delivery === 'parent') {
++          establishExternalCatalogChild(parent.session, activation.childId, spec.label)
++        }
++        this.announce(activation)
++        return this.receipt(activation)
++      } catch (error: unknown) {
++        if (activation !== undefined) {
++          try {
++            await this.dispose(activation)
++          } catch (cleanupError: unknown) {
++            this.ctx.logger.warn(`subagent "${activation.childId}" admission rollback failed: ${failureMessage(cleanupError)}`)
++          }
++        }
++        throw error
++      } finally {
++        releaseHold()
++      }
++    })
+   }
+ 
+   /** Capture the explicit or inherited directory while the parent still owns startup. */
+@@ -546,30 +550,32 @@
+     content: ContentBlock[],
+     options: SubagentSendMessageOptions,
+   ): Promise<MessageId> {
+-    if (this.ctx.agents.get(sender.id) !== sender) {
+-      throw new SubagentError(
+-        'message delivery requires the exact live sender agent',
+-        'UNAUTHORIZED',
+-      )
+-    }
+-    this.assertAdmitting(sender)
+-    const senderActivation = this.resident.get(sender.id)
+-    if (senderActivation !== undefined
+-      && senderActivation.kind === 'local'
+-      && senderActivation.handle.agent === sender
+-      && senderActivation.parent.id === targetId) {
+-      options.signal.throwIfAborted()
+-      return this.sendToParent(senderActivation, sender, content)
+-    }
+-    if (sender.session.header.parentSession === targetId) {
+-      throw new SubagentError(
+-        `agent "${sender.id}" is not a resident continuable child and cannot send to parent "${targetId}"`,
+-        'UNAUTHORIZED',
+-      )
+-    }
+-    return this.deliverToChild(sender, targetId, content, {
+-      signal: options.signal,
+-      delivery: 'steer',
++    return this.ctx.agents.updateAdmission.run(async () => {
++      if (this.ctx.agents.get(sender.id) !== sender) {
++        throw new SubagentError(
++          'message delivery requires the exact live sender agent',
++          'UNAUTHORIZED',
++        )
++      }
++      this.assertAdmitting(sender)
++      const senderActivation = this.resident.get(sender.id)
++      if (senderActivation !== undefined
++        && senderActivation.kind === 'local'
++        && senderActivation.handle.agent === sender
++        && senderActivation.parent.id === targetId) {
++        options.signal.throwIfAborted()
++        return this.sendToParent(senderActivation, sender, content)
++      }
++      if (sender.session.header.parentSession === targetId) {
++        throw new SubagentError(
++          `agent "${sender.id}" is not a resident continuable child and cannot send to parent "${targetId}"`,
++          'UNAUTHORIZED',
++        )
++      }
++      return this.deliverToChild(sender, targetId, content, {
++        signal: options.signal,
++        delivery: 'steer',
++      })
+     })
+   }
+ 
+@@ -589,7 +595,9 @@
+     source: MessageSource,
+     signal: AbortSignal,
+   ): Promise<MessageId> {
+-    return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'queue' })
++    return this.ctx.agents.updateAdmission.run(async () => {
++      return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'queue' })
++    })
+   }
+ 
+   /**
+@@ -608,7 +616,9 @@
+     source: MessageSource,
+     signal: AbortSignal,
+   ): Promise<MessageId> {
+-    return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'steer' })
++    return this.ctx.agents.updateAdmission.run(async () => {
++      return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'steer' })
++    })
+   }
+ 
+   /** Admit local input synchronously before any teardown can begin. */
+@@ -974,7 +984,7 @@
+       this.watchLocalSettlement(activation)
+     } else {
+       const finish = (): Promise<void> => this.close(activation, () => this.finishDisposal(activation, false))
+-      void activation.run.result.then(finish, finish).catch((error: unknown) => { this.reportTeardownFailure(activation, error) })
++      void this.ctx.agents.updateAdmission.run(() => activation.run.result.then(finish, finish)).catch((error: unknown) => { this.reportTeardownFailure(activation, error) })
+     }
+   }
+ 
+@@ -983,6 +993,9 @@
+     return this.close(activation, async () => {
+       try {
+         await (activation.kind === 'local' ? activation.handle.dispose() : activation.run.dispose())
++      } catch (disposalError: unknown) {
++        this.ctx.agents.updateAdmission.markUnknown()
++        throw disposalError
+       } finally {
+         this.resident.delete(activation.childId)
+         activation.releaseSlot()
+@@ -1154,6 +1167,7 @@
+       if (activation.kind === 'local') await activation.handle.dispose()
+       else await (externalDisposal ?? activation.run.dispose())
+     } catch (error: unknown) {
++      this.ctx.agents.updateAdmission.markUnknown()
+       failures.push(new SubagentError(
+         `subagent "${childId}" activation handle disposal failed: ${detail(error)}`,
+         'ACTIVATION_TEARDOWN_FAILED',
+diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagent/src/index.ts
+--- a/packages/subagent/subagent/src/index.ts
++++ b/packages/subagent/subagent/src/index.ts
+@@ -204,6 +204,8 @@
+    * keys its carrier by this exact service instance, whose own context filter
+    * composes into the carrier.
+    */
++  get updateAdmission(): Context['agents']['updateAdmission'] { return this.ctx.agents.updateAdmission }
++
+   private readonly emitLifecycle: LifecycleEmitter
+ 
+   constructor(ctx: Context, private config: Config) {
+@@ -267,20 +269,22 @@
+    * childId requires a local backend and guarantees an accepted messageId.
+    */
+   async startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation> {
+-    const provider = this.expectProvider(spec.provider)
+-    if (spec.childId !== undefined && provider.prepareContinuable === undefined) {
+-      throw new SubagentError('reserved child ids require a local backend', 'UNSUPPORTED_CAPABILITY')
+-    }
+-    assertSubagentMaxDepth(spec.request.maxDepth)
+-    this.assertCapabilities(provider, { ...spec.request, signal: spec.signal })
+-    const manager = this.requireManager()
+-    if (this.ctx.get('agents')?.get(spec.request.parent.id) !== spec.request.parent) {
+-      throw new SubagentError('subagent creation requires the exact live parent agent', 'UNAUTHORIZED')
+-    }
+-    if (spec.request.outputSchema !== undefined) assertObjectJsonSchema(spec.request.outputSchema)
+-    return provider.prepareContinuable === undefined
+-      ? manager.startExternal(spec)
+-      : manager.startLocal(spec)
++    return this.ctx.agents.updateAdmission.run(async () => {
++      const provider = this.expectProvider(spec.provider)
++      if (spec.childId !== undefined && provider.prepareContinuable === undefined) {
++        throw new SubagentError('reserved child ids require a local backend', 'UNSUPPORTED_CAPABILITY')
++      }
++      assertSubagentMaxDepth(spec.request.maxDepth)
++      this.assertCapabilities(provider, { ...spec.request, signal: spec.signal })
++      const manager = this.requireManager()
++      if (this.ctx.get('agents')?.get(spec.request.parent.id) !== spec.request.parent) {
++        throw new SubagentError('subagent creation requires the exact live parent agent', 'UNAUTHORIZED')
++      }
++      if (spec.request.outputSchema !== undefined) assertObjectJsonSchema(spec.request.outputSchema)
++      return provider.prepareContinuable === undefined
++        ? manager.startExternal(spec)
++        : manager.startLocal(spec)
++    })
+   }
+ 
+   /**
+diff --git a/apps/desktop-host/src/update-tasks.ts b/apps/desktop-host/src/update-tasks.ts
+--- a/apps/desktop-host/src/update-tasks.ts
++++ b/apps/desktop-host/src/update-tasks.ts
+@@ -3,6 +3,7 @@
+ import type { Context } from '@deepseek-ai/cordis'
+ import type {} from '@deepseek-ai/dsh-agent'
+ import type {} from '@deepseek-ai/dsh-jobs'
++import type {} from '@deepseek-ai/dsh-subagent'
+ import type {} from '@deepseek-ai/dsh-client-connection'
+ 
+ /**
+@@ -25,38 +26,71 @@
+  * @param ctx - Booted Desktop profile context; disposal removes the request listener.
+  * @returns Task inspector whose lock refuses new API requests, drains admitted requests, and rechecks work.
+  */
+-export function installDesktopUpdateTaskControl(ctx: Context): (action: 'inspect' | 'lock' | 'unlock') => Promise<boolean> {
+-  let locked = false
+-  let lockGeneration = 0
++export function installDesktopUpdateTaskControl(ctx: Context): (action: 'inspect' | 'lock' | 'unlock', token?: string) => Promise<boolean> {
++  let owner: string | undefined
+   let stopped = false
++  let locking: Promise<boolean> | undefined
++  let lockedGate: Context['agents']['updateAdmission'] | undefined
+   ctx.effect(() => () => { stopped = true })
+   const pendingRequests = new Set<Promise<void>>()
+   ctx.on('connection/request', async (_request, response, next) => {
+-    if (locked) {
+-      response.writeHead(503)
+-      response.end()
+-      return
+-    }
++    if (owner !== undefined) { response.writeHead(503); response.end(); return }
+     const finished = Promise.withResolvers<void>()
+     pendingRequests.add(finished.promise)
+     try { await next() }
+     finally { pendingRequests.delete(finished.promise); finished.resolve() }
+   })
+-  return async (action) => {
++  const release = (token: string): void => {
++    if (owner !== token) return
++    owner = undefined
++    locking = undefined
++    const gate = lockedGate
++    lockedGate = undefined
++    gate?.release(token)
++  }
++  return async (action, token) => {
++    if (action === 'unlock') {
++      if (!token) throw new Error('desktop update: missing admission token')
++      release(token)
++      return false
++    }
+     if (stopped) throw new Error('desktop update: Host is stopping')
+-    if (action === 'unlock') { locked = false; lockGeneration++ }
+     const agents = ctx.get('agents')
+     const jobs = ctx.get('jobs')
++    const subagents = ctx.get('subagents')
+     if (agents === undefined || jobs === undefined) throw new Error('desktop update: task services are unavailable')
+-    if (action === 'lock') {
+-      locked = true
+-      const generation = ++lockGeneration
+-      // Read requests are not tasks; admitted writes must finish before the final work check.
+-      await Promise.all(pendingRequests)
+-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Disposal can run while admitted requests drain.
+-      if (stopped) throw new Error('desktop update: Host is stopping')
+-      if (generation !== lockGeneration) throw new Error('desktop update: admission lock was superseded')
++    const gate = agents.updateAdmission
++    if (gate?.version !== 1 || jobs.updateAdmission !== gate
++      || (subagents !== undefined && subagents.updateAdmission !== gate)) {
++      throw new Error('desktop update: Host lacks complete task admission capability')
+     }
+-    return hasDesktopActiveTasks(agents.list(), jobs)
++    const inspect = (): boolean => {
++      const live = agents.list()
++      if (live.some(agent => !('updateAdmission' in agent) || agent.updateAdmission !== gate)) {
++        throw new Error('desktop update: an agent lacks task admission capability')
++      }
++      return gate.active > 0 || hasDesktopActiveTasks(live, jobs)
++    }
++    if (action === 'inspect') return inspect()
++    if (!token) throw new Error('desktop update: missing admission token')
++    if (owner !== undefined) {
++      if (owner !== token) throw new Error('desktop update: admission already owned')
++      if (locking !== undefined) return locking
++    }
++    owner = token
++    const lock = async (): Promise<boolean> => {
++      try {
++        await Promise.all(pendingRequests)
++        if (stopped) throw new Error('desktop update: Host is stopping')
++        if (owner !== token) throw new Error('desktop update: admission lock was superseded')
++        lockedGate = gate
++        gate.freeze(token)
++        const busy = inspect()
++        if (busy) release(token)
++        return busy
++      } catch (error) { release(token); throw error }
++    }
++    locking = lock()
++    return locking
+   }
+ }
+diff --git a/apps/desktop-host/src/index.ts b/apps/desktop-host/src/index.ts
+--- a/apps/desktop-host/src/index.ts
++++ b/apps/desktop-host/src/index.ts
+@@ -80,8 +80,9 @@
+     void (async () => {
+       try {
+         if (stopping !== undefined || control.updateTasks === undefined) throw new Error('desktop update: Host is unavailable')
+-        const active = await control.updateTasks(message.action as 'inspect' | 'lock' | 'unlock')
+-        await send({ type: 'update-tasks', requestId: message.requestId, active })
++        const token = 'token' in message && typeof message.token === 'string' ? message.token : undefined
++        const active = await control.updateTasks(message.action as 'inspect' | 'lock' | 'unlock', token)
++        await send({ type: 'update-tasks', requestId: message.requestId, active, admissionVersion: 1, token })
+       } catch (error) {
+         await send({ type: 'update-tasks', requestId: message.requestId, active: true,
+           error: error instanceof Error ? error.message : String(error) })
+diff --git a/apps/desktop/scripts/retain-desktop-ci.ts b/apps/desktop/scripts/retain-desktop-ci.ts
+--- a/apps/desktop/scripts/retain-desktop-ci.ts
++++ b/apps/desktop/scripts/retain-desktop-ci.ts
+@@ -33,6 +33,7 @@
+  */
+ export async function retainDesktopCi(env: NodeJS.ProcessEnv, appRoot = resolve(import.meta.dirname, '..')): Promise<string> {
+   const target = resolveDesktopBuildTarget(env)
++  if (target === 'linux-x64') throw new Error('desktop retention: Linux uses the independent release workflow')
+   const windows = target === 'win-x64'
+   const platform = windows ? 'win32' : 'darwin'
+   const settings = loadDesktopPackageEnvironment(platform, env, appRoot, { unsigned: true })

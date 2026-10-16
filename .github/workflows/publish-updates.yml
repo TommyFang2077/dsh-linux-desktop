@@ -1,0 +1,81 @@
+name: Isolated signed release publication
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      artifact:
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+    secrets:
+      signing_key:
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: workbench-update-feed
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify immutable release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: artifacts
+      - name: Sign verified data only on a fresh runner
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.signing_key }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sign-release.mjs artifacts
+      - name: Publish immutable release assets before updating feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/publish-release.py
+          feed=$(mktemp -d "$RUNNER_TEMP/workbench-feed.XXXXXX")
+          git init --initial-branch=update-feed "$feed"
+          git -C "$feed" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if git -C "$feed" ls-remote --exit-code origin refs/heads/update-feed > /dev/null; then
+            git -C "$feed" fetch --depth=1 origin update-feed
+            git -C "$feed" checkout -B update-feed FETCH_HEAD
+          else
+            code=$?
+            test "$code" = 2
+          fi
+          node scripts/sign-release.mjs --check-promotion artifacts "$feed"
+          cp artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json "$feed/"
+          git -C "$feed" config user.name 'github-actions[bot]'
+          git -C "$feed" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for file in artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json; do
+            git -C "$feed" add "$(basename "$file")"
+          done
+          if git -C "$feed" diff --cached --quiet; then exit 0; fi
+          git -C "$feed" commit -m "Publish signed update feeds for $RELEASE_TAG"
+          git -C "$feed" -c credential.helper='!gh auth git-credential' push origin HEAD:refs/heads/update-feed

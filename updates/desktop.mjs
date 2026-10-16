@@ -1,10 +1,11 @@
-import { BrowserWindow, ipcMain, dialog } from 'electron'
+import { BrowserWindow, ipcMain, dialog, Notification } from 'electron'
 import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { UpdateManager } from './core.mjs'
+import { AutomaticUpdates, confirmUpdate } from './automatic.mjs'
 import { ensureMarket } from './market.mjs'
 import { detectUserDesktop, installUserDesktop } from './user-install.mjs'
 import { markWholeDesktopHealthy } from './whole-desktop.mjs'
@@ -36,7 +37,7 @@ export async function createWorkbenchUpdates(options) {
       protocol: descriptor.release.hostProtocolVersion },
     verifyKernel: options.verifyKernel, probeKernel: options.probeKernel,
     onProgress: message => console.info(`dsh-workbench update: ${message}`),
-    extract,
+    extract, signal: extractionLifetime.signal,
   })
   await manager.boot()
   const upgradeFailure = process.env.DSH_WHOLE_DESKTOP_FAILED
@@ -49,6 +50,23 @@ export async function createWorkbenchUpdates(options) {
   app.on('before-quit', () => provisioning.abort())
   let window
   let performing = false
+  const automatic = new AutomaticUpdates({ manager,
+    run: async operation => {
+      if (performing) throw new Error('已有更新操作正在进行，稍后重试')
+      performing = true
+      try { return await operation() } finally { performing = false }
+    },
+    notify: (channel, release) => {
+      manager.notice = `${channel === 'kernel' ? '内核' : '桌面'} ${release.version} 已下载并校验。请打开软件更新，确认后安装并重启；有活动任务时将暂缓。`
+      if (Notification.isSupported()) {
+        const notification = new Notification({ title: '更新已准备好', body: manager.notice })
+        notification.on('click', () => { void open().catch(error => console.error(error)) })
+        notification.show()
+      }
+    },
+  })
+  app.on('will-quit', () => automatic.stop())
+  const status = () => ({ ...manager.status(), busy: performing || manager.busy, automatic: automatic.state })
   const url = pathToFileURL(join(resources, 'updates.html')).href
   const open = async () => {
     if (window && !window.isDestroyed()) { window.show(); window.focus(); return }
@@ -67,7 +85,7 @@ export async function createWorkbenchUpdates(options) {
   ipcMain.handle('dsh-workbench:versions', async (event, check = false) => {
     if (!options.trustedSender(event)) throw new Error('拒绝不可信的版本查询')
     if (typeof check !== 'boolean') throw new Error('版本查询参数无效')
-    if (!check) return { ...manager.status(), errors: {} }
+    if (!check) return { ...status(), errors: {} }
     if (performing) throw new Error('已有更新操作或确认对话框正在进行')
     performing = true
     const errors = {}
@@ -78,13 +96,13 @@ export async function createWorkbenchUpdates(options) {
       if (config.desktopUpgrade) {
         try { await manager.checkWholeDesktopUpgrade() } catch (error) { errors.desktopUpgrade = error.message }
       }
-      const status = manager.status()
-      for (const channel of ['kernel', 'desktop']) if (status[channel].crossEpoch) delete errors[channel]
-      const upgrade = status.desktopUpgrade
-      if (upgrade?.available && !status.desktop.available) {
-        status.desktop = { ...status.desktop, latest: upgrade.latest, latestLinuxRevision: upgrade.latestLinuxRevision }
+      const result = status()
+      for (const channel of ['kernel', 'desktop']) if (result[channel].crossEpoch) delete errors[channel]
+      const upgrade = result.desktopUpgrade
+      if (upgrade?.available && !result.desktop.available) {
+        result.desktop = { ...result.desktop, latest: upgrade.latest, latestLinuxRevision: upgrade.latestLinuxRevision }
       }
-      return { ...status, errors }
+      return { ...result, errors }
     } finally { performing = false }
   })
   ipcMain.handle('dsh-workbench:open-updates', async event => {
@@ -96,7 +114,7 @@ export async function createWorkbenchUpdates(options) {
       || event.senderFrame.url !== url) throw new Error('拒绝不可信的更新操作')
     let ownsOperation = false
     try {
-      if (action === 'status') return { status: manager.status() }
+      if (action === 'status') return { status: status() }
       if (performing) throw new Error('已有更新操作或确认对话框正在进行')
       performing = true
       ownsOperation = true
@@ -105,22 +123,25 @@ export async function createWorkbenchUpdates(options) {
         ? await manager.checkWholeDesktopUpgrade() : await manager.check(channel) }
       if (action !== 'install') throw new Error('未知更新操作')
       if (manager.busy) throw new Error('已有更新操作正在进行')
-      const version = manager.status()[channel].available
+      const version = status()[channel].available
       if (!version) throw new Error('请先检查更新')
-      const answer = await dialog.showMessageBox(window, {
-        type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${manager.status()[channel].availableLinuxRevision}` : ''}？`,
-        detail: channel === 'desktopUpgrade'
-          ? '这次更新会改变数据格式。请先关闭正在使用 dsh 的命令行。应用会停止当前任务并退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开。'
-          : '应用会停止当前任务并重启。',
-        buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
-      })
-      if (answer.response !== 1) return { status: manager.status() }
+      const approved = await confirmUpdate({ manager, channel, inspect: options.inspectTasks, confirm: async () => {
+        const answer = await dialog.showMessageBox(window, {
+          type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${status()[channel].availableLinuxRevision}` : ''}？`,
+          detail: channel === 'desktopUpgrade'
+          ? '这次更新会改变数据格式。请先关闭正在使用 dsh 的命令行。仅在无活动任务时退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开。'
+          : '更新已下载并校验。安装后应用将重启；有活动任务或无法确认任务状态时将暂缓，不会强制停止任务。',
+          buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
+        })
+        return answer.response === 1
+      } })
+      if (!approved) return { status: status() }
       if (channel === 'desktopUpgrade') {
         await manager.installWholeDesktopUpgrade({
           ...options.wholeDesktop, root: userDesktop?.root ?? join(options.wholeDesktop.home, 'Applications/dsh-linux-desktop'),
         }, { prepareRestart: options.prepareRestart, recover: options.recover,
           quitWithoutRelaunch: options.quitWithoutRelaunch })
-        return { status: manager.status() }
+        return { status: status() }
       }
       try {
         let installed
@@ -134,8 +155,8 @@ export async function createWorkbenchUpdates(options) {
         await options.recover()
         throw error
       }
-      return { status: manager.status() }
-    } catch (error) { return { status: manager.status(), error: error.message } }
+      return { status: status() }
+    } catch (error) { return { status: status(), error: error.message } }
     finally { if (ownsOperation) performing = false }
   })
   return {
@@ -144,6 +165,7 @@ export async function createWorkbenchUpdates(options) {
       await manager.markHealthy()
       await markWholeDesktopHealthy({ home: options.wholeDesktop.home, version: app.getVersion(),
         executable: process.execPath, pid: process.pid })
+      automatic.start()
     },
     rollback: () => manager.rollback(),
     ensureDefaults: async home => {
