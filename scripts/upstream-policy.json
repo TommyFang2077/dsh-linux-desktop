@@ -12,6 +12,10 @@
     "0.2.1-alpha.4": {
       "commit": "86a402200d95fecef4529d969836f1fe13c6cb0d",
       "pnpm": "11.28.5"
+    },
+    "0.2.1-alpha.5": {
+      "commit": "1517a4dbca0a2789ff1d41ba439600f8547d23fa",
+      "pnpm": "11.28.5"
     }
   },
   "desktopUpgradeFeeds": {
@@ -19,5 +23,40 @@
     "dsh-0.2.1-alpha.2": "desktop-dsh-0.2.1-alpha.2-latest.json",
     "dsh-0.2.1-alpha.4": "desktop-dsh-0.2.1-alpha.2-latest.json"
   },
-  "transitions": []
+  "transitions": [
+    {
+      "from": "86a402200d95fecef4529d969836f1fe13c6cb0d",
+      "to": "1517a4dbca0a2789ff1d41ba439600f8547d23fa",
+      "status": "compatible",
+      "evidence": "Reviewed 2026-10-17: official 86a40220..1517a4db is 36 commits (UI account notices, model label slot, sidebar, PTC/tool prompt text, terminal discovery client, Windows packaging). No package.json change besides versions; pnpm-lock adds only 3 workspace links; pnpm 11.28.5 unchanged. No persistence, migration, storage, schemaVersion or config-schema change in non-test source; session snapshots change only system-prompt text; the only upgrade guide relaxes server-side AccountBonusNotification types (not stored locally). CI run 38995501293 packaged alpha.5 with official 9/9 gates and build.py confirmed hostProtocolVersion 4 and Node 24.21.0. Data epoch and protocol are kept.",
+      "upstream": {
+        "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
+        "commit": "1517a4dbca0a2789ff1d41ba439600f8547d23fa",
+        "version": "0.2.1-alpha.5",
+        "pnpm": "11.28.5"
+      },
+      "fromDesktop": {
+        "version": "0.2.1-alpha.4",
+        "linuxRevision": 1,
+        "protocol": 4,
+        "dataEpoch": "dsh-0.2.1-alpha.4",
+        "desktopRange": ">=0.2.1-alpha.4 <0.3.0",
+        "nodeRange": ">=24.18.1 <25.0.0",
+        "nodeVersion": "24.21.0",
+        "kernelRange": ">=0.2.1-alpha.4 <0.3.0",
+        "electronVersion": "44.7.0"
+      },
+      "desktop": {
+        "version": "0.2.1-alpha.5",
+        "linuxRevision": 2,
+        "protocol": 4,
+        "dataEpoch": "dsh-0.2.1-alpha.4",
+        "desktopRange": ">=0.2.1-alpha.4 <0.3.0",
+        "nodeRange": ">=24.18.1 <25.0.0",
+        "nodeVersion": "24.21.0",
+        "kernelRange": ">=0.2.1-alpha.4 <0.3.0",
+        "electronVersion": "44.7.0"
+      }
+    }
+  ]
 }

@@ -218,7 +218,7 @@ test('current alpha4 metadata denies legacy epochs even when both versions satis
   const upstream = JSON.parse(await fs.readFile('upstream.json', 'utf8'))
   const feeds = JSON.parse(await fs.readFile('updates.json', 'utf8'))
   assert.equal(desktop.version, upstream.version)
-  assert.equal(desktop.dataEpoch, 'dsh-' + upstream.version)
+  assert.ok(!['dsh-0.2.1-alpha.1', 'dsh-0.2.1-alpha.2'].includes(desktop.dataEpoch))
   assert.doesNotThrow(() => checkCompatibility(desktop, desktop))
   assert.throws(() => checkCompatibility({ ...desktop, version: '0.2.1-alpha.2',
     dataEpoch: 'dsh-0.2.1-alpha.2', desktopRange: '>=0.2.1-alpha.2 <0.3.0' }, desktop), /不兼容/)
