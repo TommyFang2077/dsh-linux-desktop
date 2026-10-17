@@ -1,10 +1,10 @@
 {
   "kernel": {
-    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/kernel-dsh-0.2.1-alpha.4-latest.json",
+    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/kernel-dsh-0.2.1-rc.2-latest.json",
     "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAI9yYNDjEBBHTgGaN8n/3eBcyUN+zIxn1k/fzCAmo8yQ=\n-----END PUBLIC KEY-----\n"
   },
   "desktop": {
-    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-dsh-0.2.1-alpha.4-latest.json",
+    "url": "https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-dsh-0.2.1-rc.2-latest.json",
     "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAI9yYNDjEBBHTgGaN8n/3eBcyUN+zIxn1k/fzCAmo8yQ=\n-----END PUBLIC KEY-----\n"
   },
   "desktopUpgrade": {
