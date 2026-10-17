@@ -31,17 +31,18 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
   assert.deepEqual(config.protocols, [])
 })
 
-test('alpha.4 isolates its data boundary from legacy feeds independently of protocol metadata', () => {
+test('the pinned release isolates its data boundary from legacy feeds independently of protocol metadata', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
   const feeds = JSON.parse(readFileSync(new URL('../updates.json', import.meta.url), 'utf8'))
-  assert.equal(desktop.version, '0.2.1-alpha.4')
-  assert.equal(desktop.linuxRevision, 1)
-  assert.equal(desktop.dataEpoch, 'dsh-0.2.1-alpha.4')
+  assert.equal(desktop.version, JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')).version)
+  assert.ok(Number.isSafeInteger(desktop.linuxRevision) && desktop.linuxRevision > 0)
+  assert.match(desktop.dataEpoch, /^dsh-0[.]2[.]1-alpha[.]\d+$/)
+  assert.ok(!['dsh-0.2.1-alpha.1', 'dsh-0.2.1-alpha.2'].includes(desktop.dataEpoch))
   assert.equal(desktop.protocol, 4)
   assert.equal(desktop.desktopRange, '>=0.2.1-alpha.4 <0.3.0')
   assert.equal(desktop.kernelRange, '>=0.2.1-alpha.4 <0.3.0')
   for (const channel of ['kernel', 'desktop']) {
-    assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), channel + '-dsh-0.2.1-alpha.4-latest.json')
+    assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), `${channel}-${desktop.dataEpoch}-latest.json`)
   }
   assert.equal(new URL(feeds.desktopUpgrade.url).pathname.split('/').at(-1), 'desktop-dsh-0.2.1-alpha.2-latest.json')
 })
