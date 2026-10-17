@@ -111,7 +111,7 @@ jobs:
           revision=$(node -p 'JSON.parse(require("fs").readFileSync("desktop.json", "utf8")).linuxRevision')
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/workbench-v$version-r$revision/"
           node build/release-updates.mjs kernel \
-            --input build/upstream/apps/desktop/.desktop-build/targets/linux-x64 \
+            --archive "dist/dsh-workbench-$version-r$revision-linux-x64.tar.gz" \
             --metadata desktop.json --output dist/kernel-release --key "$key" --base-url "$base"
           node build/release-updates.mjs desktop \
             --archive "dist/dsh-workbench-$version-r$revision-linux-x64.tar.gz" \

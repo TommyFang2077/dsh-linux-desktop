@@ -16,7 +16,7 @@ const { positionals, values } = parseArgs({ allowPositionals: true, options: {
 } })
 const channel = positionals[0]
 if (!['kernel', 'desktop'].includes(channel) || !values.key || !values.output || !values['base-url']) {
-  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel] [--archive desktop.tar.gz --deb desktop.deb --rpm desktop.rpm] [--metadata desktop.json]')
+  throw new Error('Usage: node build/release-updates.mjs kernel|desktop --key /secure/key.pem --base-url https://host/releases/ --output directory [--input prepared-kernel | --archive desktop.tar.gz] [--archive desktop.tar.gz --deb desktop.deb --rpm desktop.rpm] [--metadata desktop.json]')
 }
 const keyPath = resolve(values.key)
 const keyStat = await fs.stat(keyPath)
@@ -33,14 +33,19 @@ async function asset(path) {
 }
 let release = { ...metadata, schemaVersion: channel === 'kernel' ? 1 : 2, channel, platform: 'linux', arch: 'x64' }
 if (channel === 'kernel') {
-  if (!values.input) throw new Error('Kernel input must contain prepared dsh/ and runtime/')
-  const input = resolve(values.input)
-  const descriptor = JSON.parse(await fs.readFile(join(input, 'dsh/desktop-runtime.json'), 'utf8'))
-  release.version = descriptor.release.version
-  release.protocol = descriptor.release.hostProtocolVersion
+  if (!values.input === !values.archive) throw new Error('Kernel source must be either --input with dsh/ and runtime/ or a desktop --archive')
   const staging = await fs.mkdtemp('/tmp/dsh-kernel-release-')
+  const source = values.archive && await fs.mkdtemp('/tmp/dsh-kernel-source-')
   try {
-    for (const directory of ['dsh', 'runtime']) await fs.cp(join(input, directory), join(staging, directory), { recursive: true })
+    // The shipped desktop archive holds the deployed runtime whose Python aliases are already regular files.
+    if (source) await extractDesktop(resolve(values.archive), source)
+    const sources = source
+      ? { dsh: join(source, 'app/resources/app/dsh'), runtime: join(source, 'app/resources/runtime') }
+      : { dsh: join(resolve(values.input), 'dsh'), runtime: join(resolve(values.input), 'runtime') }
+    const descriptor = JSON.parse(await fs.readFile(join(sources.dsh, 'desktop-runtime.json'), 'utf8'))
+    release.version = descriptor.release.version
+    release.protocol = descriptor.release.hostProtocolVersion
+    for (const directory of ['dsh', 'runtime']) await fs.cp(sources[directory], join(staging, directory), { recursive: true })
     const files = await inventory(staging)
     for (const file of files) await fs.chmod(join(staging, file.path), file.executable ? 0o755 : 0o644)
     const manifest = Buffer.from(JSON.stringify({ ...release, files }) + '\n')
@@ -50,7 +55,10 @@ if (channel === 'kernel') {
     await handle.close()
     await tar.c({ gzip: { level: 1 }, file: archive, cwd: staging, portable: true, noMtime: true }, ['kernel.json', 'dsh', 'runtime'])
     release = { ...release, asset: await asset(archive), manifestSha256: createHash('sha256').update(manifest).digest('hex') }
-  } finally { await fs.rm(staging, { recursive: true, force: true }) }
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true })
+    if (source) await fs.rm(source, { recursive: true, force: true })
+  }
 } else {
   if (!values.archive || !values.deb || !values.rpm || !metadata.kernelRange || !metadata.nodeVersion) {
     throw new Error('Desktop feed requires --archive, --deb, --rpm and desktop kernelRange/nodeVersion metadata')

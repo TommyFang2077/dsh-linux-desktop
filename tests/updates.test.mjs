@@ -121,6 +121,26 @@ test('offline signing tool emits a verifiable complete kernel archive without pu
   assert.throws(() => execFileSync(process.execPath, args, { stdio: 'pipe' }), /Command failed/)
 })
 
+test('offline signing tool builds the kernel from the deployed desktop archive layout', async t => {
+  const f = await wholeDesktopFixture(t)
+  const key = join(f.root, 'signing.pem')
+  await fs.writeFile(key, keys.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 })
+  const config = join(f.root, 'desktop.json')
+  await fs.writeFile(config, JSON.stringify(metadata))
+  const output = join(f.root, 'release')
+  execFileSync(process.execPath, [fileURLToPath(new URL('../build/release-updates.mjs', import.meta.url)), 'kernel',
+    '--archive', join(f.root, 'whole.tar.gz'), '--output', output, '--key', key, '--metadata', config,
+    '--base-url', 'https://updates.test/'], { stdio: 'pipe' })
+  const release = verifyFeed(JSON.parse(await fs.readFile(join(output, 'kernel-latest.json'), 'utf8')), publicKey, 'kernel')
+  assert.equal(release.version, '2.0.0')
+  const extracted = join(f.root, 'release-extracted')
+  await fs.mkdir(extracted)
+  await extractKernel(join(output, 'dsh-kernel-2.0.0-linux-x64.tgz'), extracted)
+  await verifyKernelTree(extracted, release)
+  await fs.access(join(extracted, 'dsh/desktop-runtime.json'))
+  await fs.access(join(extracted, 'runtime/primary-runtime/runtime.json'))
+})
+
 test('bounded extraction worker preserves verification and rejects unsafe members', async t => {
   const f = await fixture(t)
   const output = join(f.root, 'worker-output')

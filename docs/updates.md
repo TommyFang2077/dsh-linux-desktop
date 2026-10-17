@@ -60,7 +60,7 @@ alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部�
 make package
 
 node build/release-updates.mjs kernel \
-  --input build/upstream/apps/desktop/.desktop-build/targets/linux-x64 \
+  --archive dist/dsh-workbench-0.2.1-alpha.2-r3-linux-x64.tar.gz \
   --output dist/kernel-release --key /secure/location/update-signing.pem \
   --base-url https://your-update-host.example/releases/version/
 
