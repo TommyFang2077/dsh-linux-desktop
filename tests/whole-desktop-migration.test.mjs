@@ -189,8 +189,8 @@ async function handoff(f, options = {}) {
   return { child, result }
 }
 
-async function completed(path) {
-  const deadline = Date.now() + 15_000
+async function completed(path, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = JSON.parse(await fs.readFile(path, 'utf8'))
     if (['healthy', 'failed'].includes(value.phase)) return value
@@ -624,6 +624,54 @@ test('the real user installer journals the old and new program group through its
   await assert.rejects(fs.lstat(join(f.root, '.activation.json')), { code: 'ENOENT' })
 })
 
+test('a background helper finishing after its main process exits settles before the verified backup', async t => {
+  const f = await fixture(t)
+  const settings = join(f.userData, 'settings.json')
+  const writer = spawn(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs/promises';
+    const handle = await fs.open(${JSON.stringify(settings)}, 'r+');
+    process.send('ready');
+    process.once('message', async ({ parent }) => {
+      while (await fs.stat('/proc/' + parent).then(() => true, () => false))
+        await new Promise(resolve => setTimeout(resolve, 20));
+      await new Promise(resolve => setTimeout(resolve, 7_500));
+      await handle.truncate(0);
+      await handle.writeFile('{"theme":"light"}');
+      await handle.close();
+      process.disconnect();
+    });`], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  const exited = new Promise(resolve => writer.once('exit', resolve))
+  t.after(async () => { if (writer.exitCode === null && writer.signalCode === null) writer.kill(); await exited })
+  await new Promise((resolve, reject) => { writer.once('message', resolve); writer.once('error', reject) })
+  const { child, result } = await handoff(f)
+  writer.send({ parent: child.pid })
+  const status = await completed(result.reportPath)
+  await exited
+  assert.equal(status.phase, 'healthy', status.error)
+  assert.equal(await fs.readFile(join(dirname(result.reportPath), 'backup/userData/settings.json'), 'utf8'), '{"theme":"light"}')
+})
+
+test('a persistent writer in desktop data still blocks migration before any backup or activation', async t => {
+  const f = await fixture(t)
+  const writer = spawn(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs/promises';
+    const handle = await fs.open(${JSON.stringify(join(f.userData, 'settings.json'))}, 'r+');
+    process.send('ready'); setInterval(() => void handle.fd, 1000);
+  `], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  const exited = new Promise(resolve => writer.once('exit', resolve))
+  t.after(async () => { writer.kill(); await exited })
+  await new Promise((resolve, reject) => { writer.once('message', resolve); writer.once('error', reject) })
+  const { result } = await handoff(f)
+  const status = await completed(result.reportPath, 45_000)
+  assert.equal(status.phase, 'failed')
+  assert.match(status.error, /Data writer must be closed/)
+  assert.equal(status.activated, false)
+  await assert.rejects(fs.lstat(join(dirname(result.reportPath), 'backup.staging')), { code: 'ENOENT' })
+  await assert.rejects(fs.lstat(join(dirname(result.reportPath), 'backup')), { code: 'ENOENT' })
+  assert.equal(await fs.readlink(join(f.root, 'current')), `versions/${f.old.release.asset.sha256}`)
+  assert.equal(await fs.readFile(join(f.userData, 'settings.json'), 'utf8'), '{"theme":"dark"}')
+})
+
 test('an unrelated process with a writable hard-link alias stops migration without any program or data cutover', async t => {
   const f = await fixture(t)
   const alias = join(f.base, 'external-data-alias')
@@ -776,7 +824,7 @@ if (!isolated) {
     // unshare --fork ignores SIGTERM, so the timeout must SIGKILL it and --kill-child tears down the namespace.
     const result = await promisify(execFile)('unshare', ['--user', '--map-current-user', '--pid', '--fork', '--mount-proc', '--kill-child',
       process.execPath, '--test', new URL(import.meta.url).pathname], {
-      env: environment, timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 ** 2,
+      env: environment, timeout: 120_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 ** 2,
     })
     assert.match(result.stdout, /production worker backs up complete data/)
     console.log(result.stdout.trim())
