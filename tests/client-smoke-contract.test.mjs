@@ -127,7 +127,7 @@ test('kernel smoke refuses the busy install before its one confirmed install and
 
 test('kernel consent proceeds directly to verified normal exit without a second UI confirmation', () => {
   const source = sources['kernel-update-smoke.mjs']
-  const approval = 'await application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))'
+  const approval = 'application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))'
   const approved = source.indexOf(approval)
   const postConsent = source.slice(approved, source.indexOf('application = undefined', approved))
   assert.doesNotMatch(postConsent, /confirmation.click|let confirmation|Install and Restart|application.windows/)

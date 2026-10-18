@@ -358,13 +358,19 @@ try {
   for (const name of ['检查更新', '确认安装并重启']) assert.equal(await updates.getByRole('button', { name, exact: true }).isDisabled(), true)
   const busy = await updates.evaluate(() => window.workbenchUpdates.invoke('check', 'kernel'))
   assert.match(busy.error, /已有更新操作或确认对话框正在进行/)
-  const exited = Promise.all([application.waitForEvent('close', { timeout: 180_000 }), once(application.process(), 'exit')])
-  await application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))
-  const [, [exitCode, signal]] = await Promise.race([
-    exited,
+  // The worker can inherit Playwright's transport descriptors, delaying its
+  // application close event after the original Electron process has exited.
+  const exited = Promise.race([
+    once(application.process(), 'exit'),
     setTimeout(180_000, undefined, { ref: false })
       .then(() => { throw new Error('Updater did not exit after clean stop') }),
   ])
+  console.log('Sending the explicit native update confirmation')
+  const responded = application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))
+    .catch(error => ({ closed: true, message: error.message }))
+  await Promise.race([responded, exited])
+  console.log('Native confirmation sent; waiting for the original Electron process exit')
+  const [exitCode, signal] = await exited
   assert.equal(exitCode, 0)
   assert.equal(signal, null)
   // The old renderer may disappear before its install IPC reply can settle.
@@ -437,13 +443,13 @@ try {
       baseline: desktop, candidate: metadata, kernelSha256: originalArchiveHash }) + '\n')
   console.log(`${realArchive ? 'Actual upstream' : 'Synthetic same-epoch'} signed kernel update passed: ${descriptor.release.version} → ${version}; desktop stays ${desktop.version}-r${desktop.linuxRevision}`)
 } catch (error) {
-  if (application) for (const page of application.windows()) {
+  if (application && application.process().exitCode === null && application.process().signalCode === null) for (const page of application.windows()) {
     console.error('Window:', page.url().slice(0, 120), await page.locator('body').innerText().catch(() => '<unavailable>'))
     await page.screenshot({ path: join(root, 'build/kernel-update-failure.png') }).catch(() => undefined)
   }
   throw error
 } finally {
-  if (application) await application.close()
+  if (application && application.process().exitCode === null && application.process().signalCode === null) await application.close()
   if (inspector) {
     await inspector.evaluate(`process.getBuiltinModule('module').createRequire(process.execPath)('electron').app.exit(0)`).catch(() => undefined)
     inspector.close()
@@ -456,6 +462,14 @@ try {
       process.kill(restartedPid, 'SIGTERM')
     }
   }
+  if (restartedPid) await until(async () => {
+    const running = await fs.realpath(`/proc/${restartedPid}/exe`).catch(error => {
+      if (error.code === 'ENOENT') return null; throw error
+    })
+    if (running) assert.equal(running, await fs.realpath(executable))
+    return !running
+  }, 'The owned restarted shell did not exit during cleanup', 15_000)
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }
-  if (!process.env.DSH_WORKBENCH_TEST_HOME) await fs.rm(temporary, { recursive: true, force: true })
+  if (!process.env.DSH_WORKBENCH_TEST_HOME) await fs.rm(temporary,
+    { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 }
