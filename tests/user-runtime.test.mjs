@@ -120,7 +120,7 @@ test('the shipped renderer checks every channel and installs a cross-epoch relea
     return { status, ...(action === 'check' && channel !== 'desktopUpgrade' ? { error: '数据格式不兼容' } : {}) }
   } } }, setInterval: () => {} })
   for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(calls.filter(([action]) => action === 'check').map(([, channel]) => channel), ['desktop', 'desktopUpgrade', 'kernel'])
+  assert.deepEqual(calls.filter(([action]) => action === 'check').map(([, channel]) => channel), ['kernel', 'desktop', 'desktopUpgrade'])
   assert.equal(nodes.get('error').textContent, '')
   assert.match(nodes.get('version').textContent, /1\.0\.0 · Linux r7/)
   assert.match(nodes.get('latest').textContent, /2\.0\.0 · Linux r2/)
@@ -134,7 +134,8 @@ test('Electron routes the explicit whole upgrade with main-owned paths and no or
   const adapter = readFileSync(new URL('../updates/desktop.mjs', import.meta.url), 'utf8')
   assert.match(adapter, /export \{ assertWholeDesktopStartupAllowed \}/)
   assert.match(adapter, /manager\.checkWholeDesktopUpgrade\(\)/)
-  assert.match(adapter, /manager\.installWholeDesktopUpgrade\(\{/)
+  assert.match(adapter, /channel === 'kernel' \? manager\.installKernelMigration\.bind\(manager\) : manager\.installWholeDesktopUpgrade\.bind\(manager\)/)
+  assert.match(adapter, /await install\(\{/)
   assert.match(adapter, /\.\.\.options.wholeDesktop/)
   assert.match(adapter, /quitWithoutRelaunch: options.quitWithoutRelaunch/)
   assert.match(adapter, /await markWholeDesktopHealthy\(/)

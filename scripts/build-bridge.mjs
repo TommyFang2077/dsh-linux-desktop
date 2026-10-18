@@ -41,8 +41,9 @@ export function bridgePlan(root = resolve(import.meta.dirname, '..')) {
   const config = fromTag('updates.json')
   for (const channel of ['kernel', 'desktop']) assert.equal(config[channel].url, `${FEED_ROOT}${channel}-latest.json`)
   const current = JSON.parse(readFileSync(resolve(root, 'updates.json'), 'utf8'))
-  config.desktopUpgrade = { ...current.desktopUpgrade }
-  assert.equal(config.desktopUpgrade.url, `${FEED_ROOT}desktop-dsh-0.2.1-alpha.2-latest.json`)
+  // This historical bridge always leads to alpha.2, independently of today's follow feed.
+  config.desktopUpgrade = { url: `${FEED_ROOT}desktop-dsh-0.2.1-alpha.2-latest.json`,
+    publicKey: current.desktopUpgrade.publicKey }
   assert.equal(config.desktopUpgrade.publicKey, config.desktop.publicKey)
   return { baselineTag: BRIDGE_BASELINE, baselineCommit, upstream, desktop, config }
 }
