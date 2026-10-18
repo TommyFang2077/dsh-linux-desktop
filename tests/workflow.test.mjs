@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import test from 'node:test'
+import { releaseFeedNames } from '../scripts/build-bridge.mjs'
 
 const require = createRequire(new URL('../build/upstream/package.json', import.meta.url))
 const workflow = require('js-yaml').load(readFileSync(new URL('../.github/workflows/linux-updates.yml', import.meta.url), 'utf8'))
@@ -56,10 +57,10 @@ test('CI preflight validates feeds, official pins and tag identity without acces
     stdio: 'pipe',
   })
   for (const channel of ['kernel', 'desktop']) {
-    const suffix = desktop.dataEpoch === 'dsh-0.2.1-alpha.1' ? '' : `-${desktop.dataEpoch}`
-    assert.equal(config[channel].url, `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}${suffix}-latest.json`)
+    assert.equal(config[channel].url, `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${releaseFeedNames(desktop)[channel]}`)
   }
-  assert.equal(config.desktopUpgrade.url, 'https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-dsh-0.2.1-alpha.2-latest.json')
+  assert.equal(config.desktopUpgrade.url, desktop.followOfficial ? config.desktop.url
+    : 'https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-dsh-0.2.1-alpha.2-latest.json')
   assert.equal(config.desktopUpgrade.publicKey, config.desktop.publicKey)
   run({})
   run({ HAS_SIGNING_KEY: 'false', GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: 'main' })
@@ -76,9 +77,10 @@ test('CI preflight refuses relabelled alpha.2 source as an alpha.1 bridge', asyn
   await cp(new URL('../scripts/upstream-policy.json', import.meta.url), join(directory, 'scripts/upstream-policy.json'))
   const upstream = { ...JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')),
     version: '0.2.1-alpha.2', commit: 'd743267388641bc76f17c45ce8b4c231aed1d32c' }
-  const legacy = { ...desktop, version: '0.2.1-alpha.1', dataEpoch: 'dsh-0.2.1-alpha.1', linuxRevision: 9 }
+  const legacy = { ...desktop, version: '0.2.1-alpha.1', dataEpoch: 'dsh-0.2.1-alpha.1', linuxRevision: 9, followOfficial: false }
   const sources = structuredClone(config)
   for (const channel of ['kernel', 'desktop']) sources[channel].url = `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}-latest.json`
+  sources.desktopUpgrade.url = 'https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/desktop-dsh-0.2.1-alpha.2-latest.json'
   await writeFile(join(directory, 'desktop.json'), JSON.stringify(legacy))
   await writeFile(join(directory, 'upstream.json'), JSON.stringify(upstream))
   await writeFile(join(directory, 'updates.json'), JSON.stringify(sources))
@@ -100,6 +102,8 @@ test('scheduled automation invokes tests and publication explicitly, not suppres
   assert.equal(automation.jobs.promote.permissions.statuses, 'write')
   for (const job of Object.values(workflow.jobs)) assert.notEqual(job.permissions?.contents, 'write')
   assert.equal(automation.jobs.test.with.source_sha, '${{ needs.discover.outputs.head }}')
+  assert.equal(automation.jobs.test.with.baseline_sha, '${{ needs.discover.outputs.base }}')
+  assert.ok(workflow.jobs.build.steps.some(step => step.run?.includes('scripts/follow-kernel-smoke.mjs')))
   assert.deepEqual(automation.jobs.promote.needs, ['discover', 'test'])
   assert.match(automation.jobs.promote.if, /success.*eligible/)
   assert.equal(automation.jobs.promote.steps[0].with.ref, '${{ github.sha }}')
@@ -162,12 +166,12 @@ test('candidate builds preserve the approved migration feed without granting rel
   await writeFile(join(directory, 'updates.json'), JSON.stringify(config))
   run()
   for (const version of ['0.2.2-alpha.1', '0.2.2-beta.1', '0.2.2-rc.2', '0.2.2']) {
-    const candidate = { ...desktop, version, linuxRevision: desktop.linuxRevision + 1, dataEpoch: `dsh-${version}` }
+    const candidate = { ...desktop, version, linuxRevision: desktop.linuxRevision + 1, dataEpoch: `dsh-${version}`, followOfficial: false }
     const upstream = { ...JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')),
       version, commit: 'f'.repeat(40) }
     const source = Object.fromEntries(Object.entries(config).map(([channel, feed]) => [channel,
-      ['kernel', 'desktop'].includes(channel) ? { ...feed,
-        url: `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}-${candidate.dataEpoch}-latest.json` } : feed]))
+      { ...feed, url: `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${['kernel', 'desktop'].includes(channel)
+        ? `${channel}-${candidate.dataEpoch}-latest.json` : 'desktop-dsh-0.2.1-alpha.2-latest.json'}` }]))
     await writeFile(join(directory, 'desktop.json'), JSON.stringify(candidate))
     await writeFile(join(directory, 'upstream.json'), JSON.stringify(upstream))
     await writeFile(join(directory, 'updates.json'), JSON.stringify(source))

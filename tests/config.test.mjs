@@ -50,7 +50,8 @@ test('the pinned release isolates its data boundary from legacy feeds independen
   for (const channel of ['kernel', 'desktop']) {
     assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), names[channel])
   }
-  assert.equal(new URL(feeds.desktopUpgrade.url).pathname.split('/').at(-1), 'desktop-dsh-0.2.1-alpha.2-latest.json')
+  assert.equal(new URL(feeds.desktopUpgrade.url).pathname.split('/').at(-1),
+    desktop.followOfficial ? names.desktop : 'desktop-dsh-0.2.1-alpha.2-latest.json')
 })
 
 test('Linux pins the tested Electron runtime without changing the official shell version', () => {
@@ -261,6 +262,7 @@ test('settings version IPC validates its sender and boolean request and isolates
   const checked = []
   const context = {
     performing: false,
+    metadata: { followOfficial: false },
     config: {},
     status: () => context.manager.status(),
     ipcMain: { handle: (name, handler) => { assert.equal(name, 'dsh-workbench:versions'); invoke = handler } },
@@ -304,6 +306,10 @@ test('settings version IPC validates its sender and boolean request and isolates
   assert.deepEqual(Object.keys(upgrade.errors), [], 'Settings shows the next data epoch as the whole upgrade, not as a failure')
   assert.equal(upgrade.desktop.latest, '2.0.0')
   assert.equal(upgrade.desktop.latestLinuxRevision, 2)
+  context.metadata.followOfficial = true
+  const following = await invoke({ trusted: true }, true)
+  assert.match(following.errors.kernel, /数据格式不兼容/, 'Kernel adaptation failures remain visible for follow-capable clients')
+  assert.equal(following.errors.desktop, undefined)
 })
 
 test('afterPack removes the default ASAR before all artifact formats and rejects remaining ASAR files', async t => {

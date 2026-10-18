@@ -5,7 +5,7 @@ import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { releaseFeedNames } from './build-bridge.mjs'
 
-export async function signRelease({ directory, metadata, config, key, repository, tag }) {
+export async function signRelease({ directory, metadata, config, key, repository, tag, upstream, policy }) {
   assert.match(repository, /^[A-Za-z0-9_.-]+[/][A-Za-z0-9_.-]+$/)
   assert.equal(tag, `workbench-v${metadata.version}-r${metadata.linuxRevision}`)
   const privateKey = createPrivateKey(key)
@@ -61,6 +61,38 @@ export async function signRelease({ directory, metadata, config, key, repository
       await verifyAsset(release.assets?.deb)
       await verifyAsset(release.assets?.rpm)
     } else assert.match(release.manifestSha256, /^[0-9a-f]{64}$/)
+    if (channel === 'kernel' && metadata.followOfficial === true) {
+      assert.ok(files.has('kernel-adaptation.json'), 'Missing kernel adaptation evidence')
+      const adaptation = JSON.parse(await readFile(files.get('kernel-adaptation.json'), 'utf8'))
+      assert.equal(adaptation.schemaVersion, 1, 'Missing kernel adaptation evidence')
+      assert.deepEqual(adaptation.candidate, { version: metadata.version, linuxRevision: metadata.linuxRevision,
+        dataEpoch: metadata.dataEpoch, upstreamCommit: upstream.commit, kernelSha256: release.asset.sha256 })
+      assert.equal(adaptation.kernelHealthy, true, 'Candidate kernel did not become healthy')
+      assert.equal(adaptation.desktopUnchanged, true, 'Previous shell was not verified')
+      assert.match(adaptation.baseline.sourceSha, /^[a-f0-9]{40}$/)
+      if (adaptation.mode === 'bootstrap') {
+        assert.deepEqual(policy?.automaticRelease?.bootstrap, { version: metadata.version,
+          linuxRevision: metadata.linuxRevision, dataEpoch: metadata.dataEpoch }, 'Bootstrap must be explicitly authorized')
+        assert.equal(adaptation.baseline.version, metadata.version)
+        assert.notEqual(adaptation.baseline.followOfficial, true)
+        assert.ok(adaptation.baseline.linuxRevision < metadata.linuxRevision)
+      } else {
+        assert.ok(['kernel', 'shell'].includes(adaptation.mode), 'Unknown adaptation evidence mode')
+        assert.equal(adaptation.baseline.followOfficial, true)
+        assert.equal(adaptation.baseline.version, policy?.automaticRelease?.shellBaseline?.version)
+        assert.equal(adaptation.baseline.linuxRevision, policy?.automaticRelease?.shellBaseline?.linuxRevision)
+        if (adaptation.mode === 'shell') {
+          assert.equal(metadata.version, adaptation.baseline.version, 'Shell maintenance cannot substitute for a new official kernel test')
+          assert.equal(upstream.commit, policy.sources?.[metadata.version]?.commit)
+          assert.equal(metadata.dataEpoch, policy.automaticRelease.shellBaseline.dataEpoch)
+          assert.ok(metadata.linuxRevision >= adaptation.baseline.linuxRevision)
+        } else {
+          assert.ok(compareVersion(metadata.version, adaptation.baseline.version) > 0)
+          assert.equal(metadata.dataEpoch, `dsh-${metadata.version}`)
+          assert.equal(adaptation.backupVerified, true, 'Cross-epoch kernel backup was not verified')
+        }
+      }
+    }
     pending.push([path, JSON.stringify({ payload: envelope.payload, signature: sign(null, payload, privateKey).toString('base64') }) + '\n'])
   }
   for (const [path, content] of pending) await writeFile(path, content)
@@ -86,7 +118,16 @@ function compareVersion(a, b) {
   return ap.length - bp.length
 }
 
-export async function checkFeedPromotion({ directory, current, metadata, config }) {
+export function feedTargets(metadata, policy) {
+  const names = releaseFeedNames(metadata)
+  const bootstrap = policy?.automaticRelease?.bootstrap
+  const legacy = metadata.followOfficial === true && bootstrap
+    && ['version', 'linuxRevision', 'dataEpoch'].every(key => metadata[key] === bootstrap[key])
+  return Object.fromEntries(['kernel', 'desktop'].map(channel => [channel,
+    [names[channel], ...(legacy ? [`${channel}-${metadata.dataEpoch}-latest.json`] : [])]]))
+}
+
+export async function checkFeedPromotion({ directory, current, metadata, config, policy }) {
   const names = releaseFeedNames(metadata)
   for (const channel of ['kernel', 'desktop']) {
     const read = async path => {
@@ -98,24 +139,38 @@ export async function checkFeedPromotion({ directory, current, metadata, config 
       return { envelope, payload }
     }
     const next = await read(join(directory, channel + '-release', names[channel]))
-    let previous
-    try { previous = await read(join(current, names[channel])) }
-    catch (error) { if (error.code === 'ENOENT') continue; throw error }
-    if (next.envelope.payload === previous.envelope.payload) continue
-    assert.equal(next.payload.dataEpoch, previous.payload.dataEpoch)
-    assert.equal(next.payload.protocol, previous.payload.protocol)
-    assert.ok(compareVersion(next.payload.version, previous.payload.version) >= 0, 'Refusing feed version downgrade')
-    assert.ok(next.payload.linuxRevision > previous.payload.linuxRevision, 'Refusing stale or conflicting feed revision')
+    for (const name of feedTargets(metadata, policy)[channel]) {
+      let previous
+      try { previous = await read(join(current, name)) }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error }
+      if (next.envelope.payload === previous.envelope.payload) continue
+      if (metadata.followOfficial !== true || name !== names[channel]) {
+        assert.equal(next.payload.dataEpoch, previous.payload.dataEpoch)
+        assert.equal(next.payload.protocol, previous.payload.protocol)
+      }
+      assert.ok(compareVersion(next.payload.version, previous.payload.version) >= 0, 'Refusing feed version downgrade')
+      assert.ok(next.payload.linuxRevision > previous.payload.linuxRevision, 'Refusing stale or conflicting feed revision')
+    }
+  }
+}
+
+export async function promoteFeeds(options) {
+  await checkFeedPromotion(options)
+  const names = releaseFeedNames(options.metadata)
+  for (const [channel, targets] of Object.entries(feedTargets(options.metadata, options.policy))) {
+    const bytes = await readFile(join(options.directory, channel + '-release', names[channel]))
+    for (const name of targets) await writeFile(join(options.current, name), bytes)
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const json = async path => JSON.parse(await readFile(path, 'utf8'))
-  const metadata = await json('desktop.json'), config = await json('updates.json')
-  if (process.argv[2] === '--check-promotion') {
-    await checkFeedPromotion({ directory: process.argv[3], current: process.argv[4], metadata, config })
+  const metadata = await json('desktop.json'), config = await json('updates.json'), policy = await json('scripts/upstream-policy.json')
+  if (['--check-promotion', '--promote-feeds'].includes(process.argv[2])) {
+    await (process.argv[2] === '--promote-feeds' ? promoteFeeds : checkFeedPromotion)({ directory: process.argv[3], current: process.argv[4], metadata, config, policy })
   } else {
     await signRelease({ directory: process.argv[2], metadata, config,
-      key: process.env.UPDATE_SIGNING_KEY, repository: process.env.GITHUB_REPOSITORY, tag: process.env.RELEASE_TAG })
+      key: process.env.UPDATE_SIGNING_KEY, repository: process.env.GITHUB_REPOSITORY, tag: process.env.RELEASE_TAG,
+      upstream: await json('upstream.json'), policy })
   }
 }

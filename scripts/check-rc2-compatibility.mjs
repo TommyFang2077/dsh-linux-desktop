@@ -57,4 +57,4 @@ for (const [method, request] of [['search', { query: 'fixture' }], ['fetch', { u
     return true
   })
 }
-console.log(JSON.stringify({ old, next, sameEpochCompatible: false, savedSelection: settings, results }, null, 2))
+console.log(JSON.stringify({ old, next, oldVersionSupportsNewProviderSettings: false, savedSelection: settings, results }, null, 2))

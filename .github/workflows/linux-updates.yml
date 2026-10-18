@@ -10,6 +10,9 @@ on:
       unreviewed:
         default: false
         type: boolean
+      baseline_sha:
+        default: ''
+        type: string
     outputs:
       artifact:
         value: ${{ jobs.build.outputs.artifact }}
@@ -49,7 +52,8 @@ jobs:
           import { readFileSync } from 'node:fs'
           import { releaseFeedNames } from './scripts/build-bridge.mjs'
           const config = JSON.parse(readFileSync('updates.json', 'utf8'))
-          const { version, linuxRevision, dataEpoch } = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          const metadata = JSON.parse(readFileSync('desktop.json', 'utf8'))
+          const { version, linuxRevision, dataEpoch, followOfficial } = metadata
           const upstream = JSON.parse(readFileSync('upstream.json', 'utf8'))
           const policy = JSON.parse(readFileSync('scripts/upstream-policy.json', 'utf8'))
           assert.equal(upstream.repository, 'https://github.com/deepseek-ai/deepseek-harness.git')
@@ -59,17 +63,20 @@ jobs:
           const transition = policy.transitions.some(row => row.status === 'compatible' && row.evidence &&
             JSON.stringify(row.upstream) === JSON.stringify(upstream) &&
             JSON.stringify(row.desktop) === JSON.stringify(JSON.parse(readFileSync('desktop.json', 'utf8'))))
-          if (process.env.ALLOW_UNREVIEWED !== 'true' && !transition) {
+          const automatic = followOfficial === true && policy.automaticRelease?.enabled === true
+          if (process.env.ALLOW_UNREVIEWED !== 'true' && !transition && !automatic) {
             assert.deepEqual({ commit: upstream.commit, pnpm: upstream.pnpm }, official)
           }
-          const feeds = releaseFeedNames({ version, linuxRevision, dataEpoch })
+          if (automatic && !official) assert.equal(dataEpoch, `dsh-${version}`, 'automatic releases keep their actual data identity')
+          const feeds = releaseFeedNames(metadata)
           for (const channel of ['kernel', 'desktop']) {
             assert.equal(config[channel].url, `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${feeds[channel]}`)
             assert.equal(createPublicKey(config[channel].publicKey).asymmetricKeyType, 'ed25519')
           }
           const migrationFeeds = policy.desktopUpgradeFeeds ?? {}
           const migrationUrl = name => `https://raw.githubusercontent.com/${process.env.GITHUB_REPOSITORY}/update-feed/${name}`
-          if (migrationFeeds[dataEpoch]) assert.equal(config.desktopUpgrade.url, migrationUrl(migrationFeeds[dataEpoch]))
+          if (automatic) assert.equal(config.desktopUpgrade.url, migrationUrl(feeds.desktop))
+          else if (migrationFeeds[dataEpoch]) assert.equal(config.desktopUpgrade.url, migrationUrl(migrationFeeds[dataEpoch]))
           else {
             assert.equal(process.env.ALLOW_UNREVIEWED, 'true', 'migration feed for this epoch is not explicitly approved')
             assert.ok(Object.values(migrationFeeds).map(migrationUrl).includes(config.desktopUpgrade.url), 'unreviewed candidate must preserve an approved migration feed')
@@ -86,7 +93,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git python3 rpm libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
+          sudo apt-get install -y build-essential git python3 rpm xvfb libgtk-3-0t64 libnss3 libxss1 libxtst6 libgbm1 libasound2t64 libatspi2.0-0t64 xdg-utils
       - name: Fetch the frozen alpha.1 baseline
         run: git fetch --depth=1 origin tag workbench-v0.2.1-alpha.1-r7
       - name: Permit user namespaces for migration tests
@@ -118,6 +125,18 @@ jobs:
             --deb "dist/dsh-workbench-$version-r$revision-linux-x64.deb" \
             --rpm "dist/dsh-workbench-$version-r$revision-linux-x64.rpm" \
             --metadata desktop.json --output dist/desktop-release --key "$key" --base-url "$base"
+      - name: Verify the previous shell with the real official candidate kernel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ inputs.baseline_sha || github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+            git fetch --depth=1 origin "$BASE_SHA"
+          else
+            git fetch --deepen=1 origin "$(git rev-parse HEAD)"
+            export BASE_SHA="$(git rev-parse HEAD^)"
+          fi
+          xvfb-run -a node scripts/follow-kernel-smoke.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: linux-updates-${{ inputs.source_sha || github.sha }}
@@ -130,5 +149,6 @@ jobs:
             dist/dsh-workbench-*-linux-x64.rpm
             dist/SHA256SUMS
             dist/build-info.json
+            dist/kernel-adaptation.json
             dist/kernel-release/
             dist/desktop-release/

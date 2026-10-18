@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test, { after } from 'node:test'
 import { AutomaticUpdates, CHECK_INTERVAL, RETRY_INTERVAL, confirmUpdate, requireIdle } from '../updates/automatic.mjs'
+import { releaseFeedNames } from '../scripts/build-bridge.mjs'
 const dependencies = resolve(process.env.DSH_UPSTREAM_DEPENDENCIES ?? 'build/upstream')
 const require = createRequire(join(dependencies, 'package.json'))
 const { build } = require(require.resolve('esbuild', { paths: [join(dependencies, 'node_modules/.pnpm/node_modules')] }))
@@ -103,6 +104,20 @@ test('unconfigured channels and cross-data migration are never automatically dow
   manager.status = () => ({ desktop: { configured: false }, kernel: { configured: false }, desktopUpgrade: { configured: true, available: '2.0.0' } })
   await new AutomaticUpdates({ manager }).check()
   assert.deepEqual(manager.counts(), { checks: 0, downloads: 0 })
+})
+
+test('a prepared kernel is downloaded before an optional desktop and avoids its transfer', async () => {
+  const sequence = []
+  const release = { version: '2.0.0', asset: { sha256: 'new-kernel' } }
+  const manager = {
+    candidates: { kernel: { release }, desktop: { release } },
+    status: () => ({ kernel: { configured: true, available: '2.0.0', crossEpoch: true },
+      desktop: { configured: true, available: '2.0.0' } }),
+    check: async channel => { sequence.push(`check:${channel}`) },
+    prepareDownload: async channel => { sequence.push(`download:${channel}`) },
+  }
+  await new AutomaticUpdates({ manager }).check()
+  assert.deepEqual(sequence, ['check:kernel', 'download:kernel'])
 })
 
 test('installation requires exact idle proof; errors and unknown states fail closed', async () => {
@@ -222,8 +237,9 @@ test('current alpha4 metadata denies legacy epochs even when both versions satis
   assert.doesNotThrow(() => checkCompatibility(desktop, desktop))
   assert.throws(() => checkCompatibility({ ...desktop, version: '0.2.1-alpha.2',
     dataEpoch: 'dsh-0.2.1-alpha.2', desktopRange: '>=0.2.1-alpha.2 <0.3.0' }, desktop), /不兼容/)
-  for (const channel of ['kernel', 'desktop']) assert.ok(feeds[channel].url.endsWith(channel + '-' + desktop.dataEpoch + '-latest.json'))
-  assert.ok(feeds.desktopUpgrade.url.endsWith('desktop-dsh-0.2.1-alpha.2-latest.json'))
+  const names = releaseFeedNames(desktop)
+  for (const channel of ['kernel', 'desktop']) assert.ok(feeds[channel].url.endsWith(names[channel]))
+  assert.ok(feeds.desktopUpgrade.url.endsWith(desktop.followOfficial ? names.desktop : 'desktop-dsh-0.2.1-alpha.2-latest.json'))
 })
 
 test('alpha4 checks the signed legacy upgrade feed without proposing a downgrade or ordinary cross-epoch install', async t => {

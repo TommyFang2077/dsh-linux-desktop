@@ -1,4 +1,4 @@
-const CHANNELS = ['desktop', 'desktopUpgrade', 'kernel']
+const CHANNELS = ['kernel', 'desktop', 'desktopUpgrade']
 let working = false
 let checked = false
 let checkFailed = false
@@ -47,7 +47,7 @@ async function check() {
   for (const channel of CHANNELS) {
     if (!last[channel]?.configured) continue
     const result = await call('check', channel)
-    if (result.error && !last[channel].crossEpoch) errors.push(result.error)
+    if (result.error && (!last[channel].crossEpoch || (channel === 'kernel' && last.kernel.followOfficial))) errors.push(result.error)
   }
   checked = true
   checkFailed = !target(last) && errors.length > 0

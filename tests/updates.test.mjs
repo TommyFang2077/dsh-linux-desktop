@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import fsSync from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { UpdateManager, checkCompatibility, extractKernel, inventory, verifyFeed, verifyKernelTree } from '../build/update-core.mjs'
 
@@ -289,6 +290,51 @@ test('a new data epoch blocks both OTA channels before activation', async t => {
     assert.equal(f.manager.status()[channel].crossEpoch, true)
     assert.equal(JSON.stringify(f.manager.state), before)
   }
+})
+
+test('official-follow kernel download retains its real epoch and still enforces the shell interface', async t => {
+  const f = await fixture(t, { dataEpoch: 'rc2-data', nodeRange: '>=26 <27' })
+  f.manager.desktop = { ...f.manager.desktop, followOfficial: true }
+  const before = { ...f.manager.state }
+  await f.manager.check('kernel')
+  assert.equal(f.manager.status().kernel.available, f.release.version)
+  assert.equal(f.manager.status().kernel.crossEpoch, true)
+  await f.manager.prepareDownload('kernel')
+  assert.equal(f.manager.candidates.kernel.release.dataEpoch, 'rc2-data')
+  assert.deepEqual(f.manager.state, before)
+  await assert.rejects(f.manager.installKernel(async () => true, () => assert.fail('must use offline transaction')), /退出和备份/)
+  for (const change of [{ protocol: 5 }, { desktopRange: '>=5' }]) {
+    f.responses.set('https://updates.test/kernel.json', Buffer.from(JSON.stringify(signed({ ...f.release, ...change }))))
+    await assert.rejects(f.manager.check('kernel'), /桌面.*不兼容/)
+  }
+})
+
+test('the update window shows cross-epoch kernel interface failures in official-follow mode', async () => {
+  const elements = new Map()
+  const status = { busy: false, kernel: { version: '1.0.0', available: null, configured: true, crossEpoch: true, followOfficial: true },
+    desktop: { version: '1.0.0', configured: false }, desktopUpgrade: { configured: false } }
+  const context = { document: { querySelectorAll: () => [], getElementById: id => {
+    if (!elements.has(id)) elements.set(id, { textContent: '' })
+    return elements.get(id)
+  } }, window: { workbenchUpdates: { invoke: async action => ({ status,
+    ...(action === 'check' ? { error: '内核与桌面协议不兼容，请先更新桌面适配' } : {}) }) } }, setInterval: () => {} }
+  runInNewContext(await fs.readFile(new URL('../updates/updates.js', import.meta.url), 'utf8') + '\nglobalThis.testCheck = check', context)
+  await context.testCheck()
+  assert.match(elements.get('error').textContent, /请先更新桌面适配/)
+})
+
+test('an interrupted kernel migration never rolls back its pointer without restoring data', async t => {
+  const f = await fixture(t)
+  const migration = '12345678-1234-1234-1234-123456789abc'
+  f.manager.state = { schemaVersion: 1, active: f.release.asset.sha256, previous: null,
+    pending: 'booting', migration, dataEpoch: 'rc2-data' }
+  await f.manager.save()
+  const before = { ...f.manager.state }
+  await assert.rejects(f.manager.rollback(), /必须恢复旧数据/)
+  assert.deepEqual(f.manager.state, before)
+  const boot = new UpdateManager(f.options)
+  await assert.rejects(boot.boot(), /ENOENT|receipt/)
+  assert.deepEqual(JSON.parse(await fs.readFile(join(f.options.root, 'state.json'), 'utf8')), before)
 })
 
 test('explicit whole desktop checking admits a signed next epoch without changing the running identity', async t => {

@@ -14,13 +14,15 @@ const BASELINE_COMMIT = 'fd218dddff5225e0c0b6bb938a0570da4e718992'
 const OFFICIAL_COMMIT = '5badb15009ae1756c3afe0ae0cef1faafc290ccc'
 const FEED_ROOT = 'https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/'
 
-export function releaseFeedNames({ version, linuxRevision, dataEpoch }) {
+export function releaseFeedNames({ version, linuxRevision, dataEpoch, followOfficial }) {
   assert.match(dataEpoch, /^dsh-[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/, 'Invalid release data epoch')
   assert.ok(Number.isSafeInteger(linuxRevision) && linuxRevision > 0, 'Invalid Linux revision')
   if (dataEpoch === 'dsh-0.2.1-alpha.1') {
+    assert.ok(!followOfficial, 'Legacy clients require their original feeds')
     assert.ok(version === '0.2.1-alpha.1' && linuxRevision === BRIDGE_REVISION, `Only genuine alpha.1 r${BRIDGE_REVISION} may replace legacy feeds`)
     return { kernel: 'kernel-latest.json', desktop: 'desktop-latest.json' }
   }
+  if (followOfficial === true) return { kernel: 'kernel-follow-latest.json', desktop: 'desktop-follow-latest.json' }
   return { kernel: `kernel-${dataEpoch}-latest.json`, desktop: `desktop-${dataEpoch}-latest.json` }
 }
 
@@ -80,6 +82,7 @@ export async function stageBridge({ root = resolve(import.meta.dirname, '..'), d
   await fs.writeFile(historicalPatch, composite)
   git(upstream, 'apply', '--reverse', '--check', historicalPatch)
   for (const path of ['updates', 'patches/bridge-migration.patch', 'electron-builder.config.mjs', 'scripts/build-updates.mjs', 'scripts/release-updates.mjs', 'scripts/build-bridge.mjs',
+    'scripts/kernel-update-smoke.mjs', 'scripts/follow-kernel-smoke.mjs',
     '.github/workflows/linux-updates.yml', 'tests/workflow.test.mjs', 'tests/manifest.test.mjs', 'tests/bridge-update.test.mjs', 'tests/fixtures/legacy-r7-core.mjs']) {
     await fs.mkdir(dirname(join(directory, path)), { recursive: true })
     await fs.cp(join(root, path), join(directory, path), { recursive: true })

@@ -35,6 +35,7 @@ export async function createWorkbenchUpdates(options) {
     desktop: { ...metadata, version: app.getVersion(), nodeVersion: primaryRuntime.node },
     bundled: { ...metadata, ...options.bundled, version: descriptor.release.version,
       protocol: descriptor.release.hostProtocolVersion },
+    migration: options.wholeDesktop,
     verifyKernel: options.verifyKernel, probeKernel: options.probeKernel,
     onProgress: message => console.info(`dsh-workbench update: ${message}`),
     extract, signal: extractionLifetime.signal,
@@ -97,7 +98,9 @@ export async function createWorkbenchUpdates(options) {
         try { await manager.checkWholeDesktopUpgrade() } catch (error) { errors.desktopUpgrade = error.message }
       }
       const result = status()
-      for (const channel of ['kernel', 'desktop']) if (result[channel].crossEpoch) delete errors[channel]
+      for (const channel of ['kernel', 'desktop']) {
+        if (result[channel].crossEpoch && !(channel === 'kernel' && metadata.followOfficial === true)) delete errors[channel]
+      }
       const upgrade = result.desktopUpgrade
       if (upgrade?.available && !result.desktop.available) {
         result.desktop = { ...result.desktop, latest: upgrade.latest, latestLinuxRevision: upgrade.latestLinuxRevision }
@@ -128,16 +131,17 @@ export async function createWorkbenchUpdates(options) {
       const approved = await confirmUpdate({ manager, channel, inspect: options.inspectTasks, confirm: async () => {
         const answer = await dialog.showMessageBox(window, {
           type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${status()[channel].availableLinuxRevision}` : ''}？`,
-          detail: channel === 'desktopUpgrade'
-          ? '这次更新会改变数据格式。请先关闭正在使用 dsh 的命令行。仅在无活动任务时退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开。'
+          detail: channel === 'desktopUpgrade' || (channel === 'kernel' && metadata.followOfficial === true)
+          ? `${channel === 'kernel' ? '仅更新内核，保留当前桌面壳。' : ''}请先关闭正在使用 dsh 的命令行。仅在无活动任务时退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开；新内核启动失败时保留备份，须恢复旧数据后回退。`
           : '更新已下载并校验。安装后应用将重启；有活动任务或无法确认任务状态时将暂缓，不会强制停止任务。',
           buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
         })
         return answer.response === 1
       } })
       if (!approved) return { status: status() }
-      if (channel === 'desktopUpgrade') {
-        await manager.installWholeDesktopUpgrade({
+      if (channel === 'desktopUpgrade' || (channel === 'kernel' && metadata.followOfficial === true)) {
+        const install = channel === 'kernel' ? manager.installKernelMigration.bind(manager) : manager.installWholeDesktopUpgrade.bind(manager)
+        await install({
           ...options.wholeDesktop, root: userDesktop?.root ?? join(options.wholeDesktop.home, 'Applications/dsh-linux-desktop'),
         }, { prepareRestart: options.prepareRestart, recover: options.recover,
           quitWithoutRelaunch: options.quitWithoutRelaunch })
@@ -162,9 +166,9 @@ export async function createWorkbenchUpdates(options) {
   return {
     get selected() { return manager.selected },
     markHealthy: async () => {
-      await manager.markHealthy()
       await markWholeDesktopHealthy({ home: options.wholeDesktop.home, version: app.getVersion(),
-        executable: process.execPath, pid: process.pid })
+        executable: process.execPath, pid: process.pid, kernel: manager.selected })
+      await manager.markHealthy()
       automatic.start()
     },
     rollback: () => manager.rollback(),

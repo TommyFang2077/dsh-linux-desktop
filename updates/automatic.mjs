@@ -65,7 +65,7 @@ export class AutomaticUpdates {
     const errors = {}
     try {
       await this.run(async () => {
-        for (const channel of ['desktop', 'kernel']) {
+        for (const channel of ['kernel', 'desktop']) {
           if (!this.manager.status()[channel]?.configured) continue
           try {
             await this.manager.check(channel)
@@ -77,6 +77,8 @@ export class AutomaticUpdates {
               this.notify(channel, release)
               this.notified.add(key)
             }
+            // A ready kernel gets priority over the optional full desktop download.
+            if (channel === 'kernel') break
           } catch (error) { errors[channel] = error.message }
         }
       })
