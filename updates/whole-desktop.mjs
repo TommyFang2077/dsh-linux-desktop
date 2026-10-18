@@ -480,7 +480,15 @@ export async function runWholeDesktopMigration(path) {
       names.push('previousDesktop')
     }
     await report(transaction, 'backup', { originalExitObservedAt: new Date().toISOString() })
-    await assertNoWriters(roots)
+    // Plugin helpers may finish their shutdown after both Host and Electron exit.
+    const writerDeadline = Date.now() + 30_000
+    while (true) {
+      try { await assertNoWriters(roots); break }
+      catch (error) {
+        if (Date.now() >= writerDeadline) throw error
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    }
     const manifest = { schemaVersion: 1, transactionId: transaction.transactionId, originalHome: transaction.home,
       installation, roots: [] }
     for (let i = 0; i < roots.length; i++) manifest.roots.push({ name: names[i], source: roots[i], entries: await snapshot(roots[i]) })
