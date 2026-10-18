@@ -197,6 +197,25 @@ test('verified persistent cache is reused but corruption and symlinks are never 
   assert.equal(f.downloads(), 3)
 })
 
+test('after a followed kernel activates, subsequent checks do not download or notify for the matching full shell', async t => {
+  const f = await fixture(t)
+  f.manager.desktop = { ...f.manager.desktop, followOfficial: true }
+  f.manager.selected = { ...f.manager.selected, version: f.release.version }
+  const notifications = []
+  const automatic = new AutomaticUpdates({ manager: f.manager, notify: (...args) => notifications.push(args) })
+  automatic.start()
+  await automatic.inFlight
+  assert.equal(f.downloads(), 0)
+  assert.deepEqual(notifications, [])
+  assert.equal(f.manager.status().desktop.latest, f.release.version)
+  assert.equal(f.manager.status().desktop.available, null)
+  assert.deepEqual(automatic.state.errors, {})
+  await automatic.check()
+  assert.equal(f.downloads(), 0)
+  assert.deepEqual(notifications, [])
+  automatic.stop()
+})
+
 test('confirmation and install revalidate signature, compatibility, target version, and cached bytes', async t => {
   const f = await fixture(t)
   await f.manager.prepareDownload('desktop')

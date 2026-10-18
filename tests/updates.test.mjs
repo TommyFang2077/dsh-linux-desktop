@@ -641,6 +641,42 @@ test('Linux revisions order desktop rebuilds without changing or downgrading off
   assert.equal(f.manager.status().desktop.latest, null)
 })
 
+test('a followed kernel already running on an older shell suppresses matching desktop bundles but retains repair fallbacks', async t => {
+  const f = await fixture(t)
+  f.manager.desktop = { ...f.manager.desktop, followOfficial: true, linuxRevision: 2 }
+  f.manager.config = { ...f.manager.config, desktopUpgrade: f.manager.config.desktop }
+  f.manager.selected = { ...f.manager.selected, version: '1.2.0' }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    version: '1.2.0', linuxRevision: 3, nodeVersion: '24.18.1', kernelRange: '>=1 <3', electronVersion: '44.7.0' }
+  const feed = value => f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(value))))
+  for (const version of ['1.2.0', '1.1.0']) {
+    feed({ ...release, version })
+    await f.manager.check('desktop')
+    await f.manager.checkWholeDesktopUpgrade()
+    assert.equal(f.manager.status().desktop.latest, version)
+    assert.equal(f.manager.status().desktopUpgrade.latest, version)
+    assert.equal(f.manager.status().desktop.available, null)
+    assert.equal(f.manager.status().desktopUpgrade.available, null)
+  }
+  feed({ ...release, version: '1.3.0' })
+  await f.manager.check('desktop')
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktop.available, '1.3.0')
+  assert.equal(f.manager.status().desktopUpgrade.available, '1.3.0')
+  f.manager.desktop = { ...f.manager.desktop, version: '1.2.0' }
+  feed(release)
+  await f.manager.check('desktop')
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktop.availableLinuxRevision, 3)
+  assert.equal(f.manager.status().desktopUpgrade.availableLinuxRevision, 3)
+  f.manager.desktop = { ...f.manager.desktop, version: '1.0.0' }
+  f.manager.selected = { ...f.manager.selected, version: '1.0.0' }
+  f.responses.set('https://updates.test/kernel.json', Buffer.from(JSON.stringify(signed({ ...f.release, protocol: 5 }))))
+  await assert.rejects(f.manager.check('kernel'), /不兼容/)
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktopUpgrade.available, '1.2.0', 'a rejected kernel still permits full-shell adaptation')
+})
+
 test('desktop authorization/installer failure preserves kernel state and cleans the download', async t => {
   const f = await fixture(t)
   const bytes = Buffer.from('installer')

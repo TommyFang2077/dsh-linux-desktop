@@ -285,6 +285,11 @@ export class UpdateManager {
     else checkCompatibility(release, this.desktop)
   }
 
+  desktopAlreadyCovered(release) {
+    return this.desktop.followOfficial === true && semver.gt(this.selected.version, this.desktop.version)
+      && semver.lte(release.version, this.selected.version)
+  }
+
   status() {
     return {
       downloaded: { ...this.downloaded },
@@ -357,6 +362,7 @@ export class UpdateManager {
       const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       const release = verifyFeed(envelope, source.publicKey, channel)
       this.latest = { ...this.latest, [channel]: release }
+      if (channel === 'desktop' && this.desktopAlreadyCovered(release)) return this.status()
       if (release.dataEpoch !== this.dataEpoch && !(channel === 'kernel' && this.desktop.followOfficial === true)) fail('新版本使用新的数据格式，普通更新不兼容；请使用「完整桌面升级」')
       if (channel === 'kernel') this.validateKernelTarget(release)
       else {
@@ -392,6 +398,7 @@ export class UpdateManager {
         fail('整包目标运行时元数据无效或不兼容')
       }
       this.latest.desktopUpgrade = release
+      if (this.desktopAlreadyCovered(release)) return this.status()
       if (semver.gt(release.version, this.desktop.version) || (semver.eq(release.version, this.desktop.version)
         && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) {
         this.candidates.desktopUpgrade = { release, envelope }
@@ -424,6 +431,7 @@ export class UpdateManager {
     const candidate = this.candidates[channel] ?? fail('请先检查更新')
     const release = verifyFeed(candidate.envelope, this.source(channel).publicKey, channel)
     if (JSON.stringify(release) !== JSON.stringify(candidate.release)) fail('更新目标已改变，请重新检查')
+    if (channel === 'desktop' && this.desktopAlreadyCovered(release)) fail('当前桌面已适配此内核，无需更换桌面壳')
     if (release.dataEpoch !== this.dataEpoch && !(channel === 'kernel' && this.desktop.followOfficial === true)) fail('数据格式不兼容，拒绝普通更新')
     if (channel === 'kernel') this.validateKernelTarget(release)
     else {
@@ -574,6 +582,7 @@ export class UpdateManager {
       const { envelope } = this.candidates.desktopUpgrade ?? fail('请先检查整包桌面升级')
       const publicKey = this.source('desktopUpgrade').publicKey
       const release = verifyFeed(envelope, publicKey, 'desktop')
+      if (this.desktopAlreadyCovered(release)) fail('当前桌面已适配此内核，无需更换桌面壳')
       const directory = await fs.mkdtemp(join(this.root, '.whole-desktop-'))
       try {
         const archive = join(directory, 'desktop.tar.gz')
