@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { stripTypeScriptTypes } from 'node:module'
 import config, { hardenPermissions, materializePythonAliases } from '../electron-builder.config.mjs'
+import { releaseFeedNames } from '../scripts/build-bridge.mjs'
 import { desktopTargetPlatform, resolveDesktopBuildTarget } from '../build/upstream/apps/desktop/scripts/desktop-build-paths.mjs'
 
 test('Linux x64 stages an unpacked desktop and keeps its independent identity', () => {
@@ -34,15 +35,20 @@ test('Linux x64 stages an unpacked desktop and keeps its independent identity', 
 test('the pinned release isolates its data boundary from legacy feeds independently of protocol metadata', () => {
   const desktop = JSON.parse(readFileSync(new URL('../desktop.json', import.meta.url), 'utf8'))
   const feeds = JSON.parse(readFileSync(new URL('../updates.json', import.meta.url), 'utf8'))
-  assert.equal(desktop.version, JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')).version)
+  const upstream = JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8'))
+  const policy = JSON.parse(readFileSync(new URL('../scripts/upstream-policy.json', import.meta.url), 'utf8'))
+  const transition = policy.transitions.find(row => row.status === 'compatible' && row.evidence &&
+    JSON.stringify(row.upstream) === JSON.stringify(upstream))
+  assert.equal(desktop.version, upstream.version)
   assert.ok(Number.isSafeInteger(desktop.linuxRevision) && desktop.linuxRevision > 0)
-  assert.match(desktop.dataEpoch, /^dsh-0[.]2[.]1-alpha[.]\d+$/)
+  assert.equal(desktop.dataEpoch, transition?.desktop.dataEpoch ?? `dsh-${desktop.version}`)
   assert.ok(!['dsh-0.2.1-alpha.1', 'dsh-0.2.1-alpha.2'].includes(desktop.dataEpoch))
   assert.equal(desktop.protocol, 4)
   assert.equal(desktop.desktopRange, '>=0.2.1-alpha.4 <0.3.0')
   assert.equal(desktop.kernelRange, '>=0.2.1-alpha.4 <0.3.0')
+  const names = releaseFeedNames(desktop)
   for (const channel of ['kernel', 'desktop']) {
-    assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), `${channel}-${desktop.dataEpoch}-latest.json`)
+    assert.equal(new URL(feeds[channel].url).pathname.split('/').at(-1), names[channel])
   }
   assert.equal(new URL(feeds.desktopUpgrade.url).pathname.split('/').at(-1), 'desktop-dsh-0.2.1-alpha.2-latest.json')
 })

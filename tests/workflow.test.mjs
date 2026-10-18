@@ -150,24 +150,36 @@ test('AI repair isolates model, validation, write control plane and untrusted bu
   assert.doesNotMatch(controller, /[/]pulls[/].*[/]merge|refs[/]tags[/]/)
 })
 
-test('the pinned release keeps its approved historical migration feed and rejects an unauthorized URL', async t => {
+test('candidate builds preserve the approved migration feed without granting release approval', async t => {
   const directory = await mkdtemp('/tmp/dsh-workflow-migration-')
   t.after(() => rm(directory, { recursive: true, force: true }))
   await mkdir(join(directory, 'scripts'))
   for (const name of ['scripts/build-bridge.mjs', 'scripts/upstream-policy.json', 'desktop.json', 'upstream.json']) await cp(new URL('../' + name, import.meta.url), join(directory, name))
-  const source = structuredClone(config)
-  assert.ok(source.kernel.url.endsWith(`/kernel-${desktop.dataEpoch}-latest.json`))
-  assert.ok(source.desktop.url.endsWith(`/desktop-${desktop.dataEpoch}-latest.json`))
   const script = workflow.jobs.build.steps.find(step => step.name === 'Check release configuration').run
-  const run = () => execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
-    cwd: directory, env: { ...process.env, ALLOW_UNREVIEWED: 'false', GITHUB_REPOSITORY: 'TommyFang2077/dsh-linux-desktop', GITHUB_REF_TYPE: 'branch' }, stdio: 'pipe',
+  const run = (unreviewed = 'true') => execFileSync('bash', ['-euo', 'pipefail', '-c', script], {
+    cwd: directory, env: { ...process.env, ALLOW_UNREVIEWED: unreviewed, GITHUB_REPOSITORY: 'TommyFang2077/dsh-linux-desktop', GITHUB_REF_TYPE: 'branch' }, stdio: 'pipe',
   })
-  await writeFile(join(directory, 'updates.json'), JSON.stringify(source))
+  await writeFile(join(directory, 'updates.json'), JSON.stringify(config))
   run()
-  source.desktopUpgrade.url = source.desktop.url
-  await writeFile(join(directory, 'updates.json'), JSON.stringify(source))
-  assert.throws(run, /Command failed/)
-  source.desktopUpgrade.url = 'https://attacker.example/desktop-dsh-0.2.1-alpha.2-latest.json'
-  await writeFile(join(directory, 'updates.json'), JSON.stringify(source))
-  assert.throws(run, /Command failed/)
+  for (const version of ['0.2.2-alpha.1', '0.2.2-beta.1', '0.2.2-rc.2', '0.2.2']) {
+    const candidate = { ...desktop, version, linuxRevision: desktop.linuxRevision + 1, dataEpoch: `dsh-${version}` }
+    const upstream = { ...JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')),
+      version, commit: 'f'.repeat(40) }
+    const source = Object.fromEntries(Object.entries(config).map(([channel, feed]) => [channel,
+      ['kernel', 'desktop'].includes(channel) ? { ...feed,
+        url: `https://raw.githubusercontent.com/TommyFang2077/dsh-linux-desktop/update-feed/${channel}-${candidate.dataEpoch}-latest.json` } : feed]))
+    await writeFile(join(directory, 'desktop.json'), JSON.stringify(candidate))
+    await writeFile(join(directory, 'upstream.json'), JSON.stringify(upstream))
+    await writeFile(join(directory, 'updates.json'), JSON.stringify(source))
+    run()
+    assert.throws(() => run('false'), /Command failed/, `${version} has no release authorization`)
+    for (const url of [source.desktop.url, 'https://attacker.example/desktop-dsh-0.2.1-alpha.2-latest.json']) {
+      await writeFile(join(directory, 'updates.json'), JSON.stringify({ ...source,
+        desktopUpgrade: { ...source.desktopUpgrade, url } }))
+      assert.throws(() => run(), /Command failed/)
+    }
+    await writeFile(join(directory, 'updates.json'), JSON.stringify(source))
+    await writeFile(join(directory, 'desktop.json'), JSON.stringify({ ...candidate, dataEpoch: '../legacy' }))
+    assert.throws(() => run(), /Command failed/)
+  }
 })

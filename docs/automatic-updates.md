@@ -1,5 +1,7 @@
 # 自动跟进与确认安装
 
+rc.2 的普通 OTA 审核已因反向 Web provider 设置不兼容停止，具体证据、测试修复与整包迁移方案见 [alpha.5 → rc.2 兼容性审核](rc2-compatibility.md)。
+
 ## 已确认策略
 
 - 跟进 `deepseek-ai/deepseek-harness` 官方 Release，包括正式版与 alpha/beta 等预发布版；不追踪普通分支提交。
