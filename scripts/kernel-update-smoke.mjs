@@ -367,9 +367,13 @@ try {
   ])
   assert.equal(exitCode, 0)
   assert.equal(signal, null)
-  await updateOperation
+  // The old renderer may disappear before its install IPC reply can settle.
+  // Process exit and the worker's health receipt below are the durable result.
+  await Promise.race([updateOperation, setTimeout(1_000, undefined, { ref: false })])
+  if (operationResult?.error) throw new Error(operationResult.error)
   application = undefined
   if (offlineTransaction) {
+    console.log('Original shell exited; waiting for the offline transaction health receipt')
     const directory = await until(async () => {
       const names = await fs.readdir(join(temporary, 'Backups/dsh-workbench')).catch(error => {
         if (error.code === 'ENOENT') return []; throw error
@@ -393,7 +397,9 @@ try {
     assert.deepEqual(backup.roots.slice(0, 2).map(entry => entry.source), [environment.DSH_HOME, data])
     assert.equal(await fs.readFile(join(directory, 'backup/dshHome/kernel-smoke-canary.txt'), 'utf8'),
       `baseline=${desktop.version};epoch=${desktop.dataEpoch}\n`)
+    console.log('Offline worker is healthy; independently verifying the complete backup')
     for (const entry of backup.roots) await verifyBackupRoot(join(directory, 'backup', entry.name), entry.entries)
+    console.log('Complete backup verified; reconnecting to the restarted shell')
     inspector = await attachOwnedInspector(restartedPid, originalExecutable)
     const versions = await inspector.evaluate(`(async()=>{const electron=process.getBuiltinModule('module').createRequire(process.execPath)('electron'); const page=electron.webContents.getAllWebContents().find(page=>page.getURL()==='dsh-app://app/'); if(!page)throw new Error('Real workspace is missing'); return page.executeJavaScript('window.dshDesktop.getWorkbenchVersions(false)')})()`)
     assert.equal(versions.kernel.version, version)
