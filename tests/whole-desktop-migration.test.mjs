@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 import publicTest from 'node:test'
 import { startWholeDesktopUpgrade, assertWholeDesktopStartupAllowed } from '../build/whole-desktop.mjs'
 import { installUserDesktop } from '../build/user-install.mjs'
+import { extractKernel, inventory, UpdateManager } from '../build/update-core.mjs'
 
 const require = createRequire(new URL('../build/upstream/package.json', import.meta.url))
 const tar = require('tar')
@@ -16,7 +17,8 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const isolated = process.env.DSH_WHOLE_DESKTOP_TEST_NAMESPACE === '1'
 const test = isolated ? publicTest : () => {}
 
-async function fixture(t, { acknowledge = true, rootMismatch } = {}) {
+async function fixture(t, { acknowledge = true, rootMismatch, kernelMigration = false, writeBeforeFailure = false,
+  kernelNodeVersion = '24.21.0', invalidKernelHealth = false } = {}) {
   const base = await fs.mkdtemp('/tmp/dsh-whole-desktop-test-')
   const reports = []
   t.after(async () => {
@@ -54,11 +56,25 @@ async function fixture(t, { acknowledge = true, rootMismatch } = {}) {
     const metadata = { version, linuxRevision: 7, protocol: 4, dataEpoch, desktopRange: '>=1 <3',
       nodeRange: '>=24 <25', kernelRange: '>=1 <2', nodeVersion: '24.21.0', electronVersion: '44.5.1' }
     const application = `import fs from 'node:fs/promises';
-      import { assertWholeDesktopStartupAllowed, markWholeDesktopHealthy } from ${JSON.stringify(new URL('../build/whole-desktop.mjs', import.meta.url).href)};
+      import { assertWholeDesktopStartupAllowed, markWholeDesktopHealthy, validateKernelMigration } from ${JSON.stringify(new URL('../build/whole-desktop.mjs', import.meta.url).href)};
       await assertWholeDesktopStartupAllowed({ home: process.env.HOME, executable: process.env.DSH_FIXTURE_EXECUTABLE,
         dshHome: ${rootMismatch === 'dshHome' ? 'process.env.HOME + "/unexpected-runtime-home"' : 'process.env.DSH_HOME'},
         userData: process.env.HOME + ${JSON.stringify(rootMismatch === 'userData' ? '/unexpected-runtime-userData' : '/.config/dsh-workbench')} });
-      ${acknowledge ? `await markWholeDesktopHealthy({ home: process.env.HOME, version: ${JSON.stringify(version)}, executable: process.env.DSH_FIXTURE_EXECUTABLE });` : ''}
+      ${kernelMigration ? `const state = JSON.parse(await fs.readFile(process.env.HOME + '/.config/dsh-workbench/updates/state.json', 'utf8'));
+        const envelope = JSON.parse(await fs.readFile(process.env.HOME + '/.config/dsh-workbench/updates/kernels/' + state.active + '/release.json', 'utf8'));
+        const release = JSON.parse(Buffer.from(envelope.payload, 'base64'));
+        const kernel = { id: state.active, version: release.version, dataEpoch: release.dataEpoch };
+        await validateKernelMigration({ home: process.env.HOME, userData: process.env.HOME + '/.config/dsh-workbench',
+          kernelRoot: process.env.HOME + '/.config/dsh-workbench/updates', migration: state.migration,
+          release: { version: kernel.version, dataEpoch: kernel.dataEpoch, asset: { sha256: kernel.id } } });` : ''}
+      if (process.env.DSH_FIXTURE_REFUSE_KERNEL_HEALTH === '1') {
+        await fs.writeFile(process.env.DSH_HOME + '/session.json', '{"epoch":"third","provider":"new-provider"}');
+        process.exit(1);
+      }
+      ${writeBeforeFailure ? `await fs.writeFile(process.env.DSH_HOME + '/session.json', '{"epoch":"new","provider":"deepseek-search-api"}');` : ''}
+      ${acknowledge ? `await markWholeDesktopHealthy({ home: process.env.HOME, version: ${JSON.stringify(version)}, executable: process.env.DSH_FIXTURE_EXECUTABLE${kernelMigration ? `, kernel: ${invalidKernelHealth ? "{ ...kernel, dataEpoch: 'incorrect-epoch' }" : 'kernel'}` : ''} });` : ''}
+      ${acknowledge ? `if (process.env.DSH_WHOLE_DESKTOP_TRANSACTION !== undefined) throw new Error('Committed migration identity leaked into future restarts');
+        await markWholeDesktopHealthy({ home: process.env.HOME, version: ${JSON.stringify(version)}, executable: process.env.DSH_FIXTURE_EXECUTABLE });` : ''}
       await fs.writeFile(process.env.HOME + '/new-started', process.env.DSH_WHOLE_DESKTOP_FAILED ?? 'started');`
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
     const files = {
@@ -100,7 +116,25 @@ async function fixture(t, { acknowledge = true, rootMismatch } = {}) {
   const request = { archive: next.path, envelope: next.envelope, publicKey: publicKey.export({ type: 'spki', format: 'pem' }),
     home, root, dshHome, userData, xdgDataHome: join(home, '.local/share'), oldExecutable: installed.executable,
     node: process.execPath, workerPath: new URL('../build/migration-worker.mjs', import.meta.url).pathname }
-  return { base, home, root, dshHome, userData, old, next, request, createArchive: archive, reports }
+  async function kernelArchive(version, dataEpoch) {
+    const payloadRoot = join(base, `kernel-${version}`)
+    await fs.mkdir(payloadRoot)
+    await fs.cp(join(base, version, 'app/resources/app/dsh'), join(payloadRoot, 'dsh'), { recursive: true })
+    await fs.cp(join(base, version, 'app/resources/runtime'), join(payloadRoot, 'runtime'), { recursive: true })
+    await fs.writeFile(join(payloadRoot, 'runtime/primary-runtime/runtime.json'), JSON.stringify({ platform: 'linux', arch: 'x64', node: kernelNodeVersion }))
+    const metadata = { version, dataEpoch, protocol: 4, desktopRange: '>=1 <3', nodeRange: '>=24 <25' }
+    const manifest = Buffer.from(JSON.stringify({ ...metadata, files: await inventory(payloadRoot) }))
+    await fs.writeFile(join(payloadRoot, 'kernel.json'), manifest)
+    const path = join(base, `kernel-${version}.tar.gz`)
+    await tar.c({ cwd: payloadRoot, file: path, gzip: true }, ['kernel.json', 'dsh', 'runtime'])
+    const release = { schemaVersion: 1, channel: 'kernel', platform: 'linux', arch: 'x64', ...metadata,
+      manifestSha256: digest(manifest), asset: { url: 'https://fixture.invalid/kernel.tar.gz', sha256: digest(await fs.readFile(path)), size: (await fs.stat(path)).size } }
+    const bytes = Buffer.from(JSON.stringify(release))
+    return { archive: path, envelope: { payload: bytes.toString('base64'), signature: sign(null, bytes, privateKey).toString('base64') } }
+  }
+  if (kernelMigration) Object.assign(request, await kernelArchive('1.2.0', 'new-epoch'), {
+    kind: 'kernel', kernelRoot: join(userData, 'updates'), desktop: { ...old.release, followOfficial: true } })
+  return { base, home, root, dshHome, userData, old, next, request, createArchive: archive, createKernelArchive: kernelArchive, reports }
 }
 
 test('an unauthenticated whole desktop never stops the running Host', async () => {
@@ -140,7 +174,7 @@ async function handoff(f, options = {}) {
     } catch (error) { process.send({ error: error.message }); process.exit(1) }`
   const child = spawn(process.execPath, ['--input-type=module', '-e', program, requestFile], {
     env: { ...process.env, HOME: f.home, DSH_HOME: f.dshHome, XDG_CONFIG_HOME: join(f.home, '.config'),
-      XDG_DATA_HOME: join(f.home, '.local/share'), XDG_CACHE_HOME: join(f.home, '.cache') },
+      XDG_DATA_HOME: join(f.home, '.local/share'), XDG_CACHE_HOME: join(f.home, '.cache'), ...options.environment },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
   })
   let errors = ''
@@ -311,6 +345,125 @@ test('the production worker backs up complete data after actual parent exit befo
   assert.equal((await fs.stat(join(directory, 'backup/dshHome/session.json'))).mode & 0o777, 0o600)
   assert.ok(status.installBytes >= 32 * 1024, 'space preflight includes actual uncompressed candidate bytes')
   assert.deepEqual(status.events.map(event => event.phase), ['prepared', 'ready', 'waiting-parent', 'backup', 'backup-verified', 'installing', 'spawned', 'healthy'])
+})
+
+test('a real cross-epoch kernel transaction keeps the shell and binds health to the selected kernel', async t => {
+  const f = await fixture(t, { kernelMigration: true })
+  const { result } = await handoff(f)
+  const status = await completed(result.reportPath)
+  assert.equal(status.phase, 'healthy', status.error)
+  const state = JSON.parse(await fs.readFile(join(f.request.kernelRoot, 'state.json'), 'utf8'))
+  const release = JSON.parse(Buffer.from(f.request.envelope.payload, 'base64'))
+  assert.equal(state.active, release.asset.sha256)
+  assert.equal(state.dataEpoch, 'new-epoch')
+  assert.equal(state.migration, result.transactionId)
+  assert.equal(await fs.readlink(join(f.root, 'current')), `versions/${f.old.release.asset.sha256}`)
+  const directory = dirname(result.reportPath)
+  assert.equal(await fs.readFile(join(directory, 'backup/dshHome/session.json'), 'utf8'), '{"epoch":"old","text":"saved"}')
+  assert.ok(Date.parse(status.backupVerifiedAt) >= Date.parse(status.originalExitObservedAt))
+  assert.ok(Date.parse(status.activatedAt) >= Date.parse(status.backupVerifiedAt))
+  const manager = new UpdateManager({ root: f.request.kernelRoot,
+    config: { kernel: { url: 'https://fixture.invalid/kernel.json', publicKey: f.request.publicKey } },
+    desktop: f.request.desktop, bundled: { ...f.request.desktop, dsh: '/bundled/dsh', runtime: '/bundled/runtime' },
+    migration: f.request, verifyKernel: async () => {} })
+  assert.equal((await manager.boot()).version, release.version)
+  assert.equal(manager.dataEpoch, release.dataEpoch)
+  assert.equal(manager.state.pending, null, 'the actual healthy worker receipt finalizes an interrupted state commit')
+  assert.equal(await manager.rollback(), false)
+  const desktop = { ...f.request.desktop, version: '1.3.0', protocol: 5, dataEpoch: 'third-epoch' }
+  const upgraded = new UpdateManager({ ...manager, desktop, bundled: { ...desktop, dsh: '/new-bundled/dsh', runtime: '/new-bundled/runtime' },
+    verifyKernel: async () => assert.fail('a full desktop upgrade must not execute its superseded old-epoch kernel') })
+  assert.equal((await upgraded.boot()).version, desktop.version)
+  assert.equal(upgraded.dataEpoch, desktop.dataEpoch)
+  assert.equal(upgraded.selected.protocol, desktop.protocol)
+})
+
+test('new kernel writes followed by a failed health check keep the lock and permit explicit whole-group restore', async t => {
+  const f = await fixture(t, { kernelMigration: true, acknowledge: false, writeBeforeFailure: true })
+  const { result } = await handoff(f)
+  const status = await completed(result.reportPath)
+  assert.equal(status.phase, 'failed')
+  assert.equal(status.activated, true)
+  const source = await fs.readFile(join(f.dshHome, 'session.json'), 'utf8')
+  assert.match(source, /deepseek-search-api/)
+  await assert.rejects(assertWholeDesktopStartupAllowed({ home: f.home, dshHome: f.dshHome, userData: f.userData,
+    executable: f.request.oldExecutable }), /blocks startup/)
+  const destination = join(f.base, 'restored-kernel-home')
+  const transaction = join(dirname(result.reportPath), 'transaction.json')
+  const restored = JSON.parse((await promisify(execFile)(process.execPath,
+    [f.request.workerPath, 'restore', transaction, destination])).stdout)
+  assert.equal(restored.restored, true)
+  assert.equal(await fs.readFile(join(destination, '.dsh/session.json'), 'utf8'), '{"epoch":"old","text":"saved"}')
+  assert.equal(await fs.readFile(join(f.dshHome, 'session.json'), 'utf8'), source)
+})
+
+test('a kernel with a mismatched real Node identity is refused before stopping the Host', async t => {
+  const f = await fixture(t, { kernelMigration: true, kernelNodeVersion: '24.18.1' })
+  await assert.rejects(startWholeDesktopUpgrade(f.request, {
+    prepareRestart: async () => assert.fail('Node mismatch must precede Host stop'), recover: async () => {},
+  }), /Node 身份不匹配/)
+  assert.equal(await fs.readlink(join(f.root, 'current')), `versions/${f.old.release.asset.sha256}`)
+})
+
+test('the manager probes real signed migration bytes and reuses its bounded extractor before cancellable handoff', async t => {
+  const f = await fixture(t, { kernelMigration: true })
+  let probes = 0, extractions = 0
+  const manager = new UpdateManager({ root: f.request.kernelRoot,
+    config: { kernel: { url: 'https://fixture.invalid/kernel.json', publicKey: f.request.publicKey } },
+    desktop: f.request.desktop, bundled: { ...f.request.desktop, dsh: '/bundled/dsh', runtime: '/bundled/runtime' },
+    migration: f.request, verifyKernel: async () => {},
+    extract: async (...args) => { extractions++; await extractKernel(...args) },
+    probeKernel: async ({ dsh, runtime }) => {
+      probes++
+      assert.equal(JSON.parse(await fs.readFile(join(dsh, 'desktop-runtime.json'), 'utf8')).release.version, '1.2.0')
+      assert.equal(JSON.parse(await fs.readFile(join(runtime, 'primary-runtime/runtime.json'), 'utf8')).node, '24.21.0')
+    }, fetch: async url => new Response(url.endsWith('/kernel.json') ? JSON.stringify(f.request.envelope) : await fs.readFile(f.request.archive)) })
+  await manager.boot()
+  await manager.check('kernel')
+  const result = await manager.installKernelMigration(f.request, {
+    prepareRestart: async () => { assert.equal(probes, 1); return false }, recover: async () => {},
+    quitWithoutRelaunch: () => assert.fail('cancel must keep the shell running'),
+  })
+  assert.deepEqual(result, { kind: 'cancelled' })
+  assert.equal(extractions, 2)
+  assert.equal(manager.state.active, null)
+  assert.equal(await fs.readlink(join(f.root, 'current')), `versions/${f.old.release.asset.sha256}`)
+})
+
+test('kernel health cannot be acknowledged using a different epoch', async t => {
+  const f = await fixture(t, { kernelMigration: true, invalidKernelHealth: true })
+  const { result } = await handoff(f)
+  const status = await completed(result.reportPath)
+  assert.equal(status.phase, 'failed')
+  assert.equal(status.activated, true)
+  assert.match(status.error, /healthy acknowledgement/)
+  await assert.rejects(assertWholeDesktopStartupAllowed({ home: f.home, dshHome: f.dshHome, userData: f.userData,
+    executable: f.request.oldExecutable }), /blocks startup/)
+})
+
+test('after a second kernel fails, whole-group restore boots the previous kernel without its old Backups tree', async t => {
+  const f = await fixture(t, { kernelMigration: true })
+  const first = await handoff(f)
+  assert.equal((await completed(first.result.reportPath)).phase, 'healthy')
+  await f.createArchive('1.3.0', 'third-epoch')
+  Object.assign(f.request, await f.createKernelArchive('1.3.0', 'third-epoch'))
+  const second = await handoff(f, { environment: { DSH_FIXTURE_REFUSE_KERNEL_HEALTH: '1' } })
+  const failed = await completed(second.result.reportPath)
+  assert.equal(failed.phase, 'failed')
+  assert.equal(failed.activated, true)
+  const destination = join(f.base, 'second-kernel-restored-home')
+  await promisify(execFile)(process.execPath, [f.request.workerPath, 'restore',
+    join(dirname(second.result.reportPath), 'transaction.json'), destination])
+  await assert.rejects(fs.stat(join(destination, 'Backups')), { code: 'ENOENT' })
+  const userData = join(destination, '.config/dsh-workbench')
+  const manager = new UpdateManager({ root: join(userData, 'updates'),
+    config: { kernel: { url: 'https://fixture.invalid/kernel.json', publicKey: f.request.publicKey } },
+    desktop: f.request.desktop, bundled: { ...f.request.desktop, dsh: '/bundled/dsh', runtime: '/bundled/runtime' },
+    migration: { home: destination, dshHome: join(destination, '.dsh'), userData }, verifyKernel: async () => {} })
+  assert.equal((await manager.boot()).version, '1.2.0')
+  assert.equal(manager.dataEpoch, 'new-epoch')
+  assert.equal(await fs.readFile(join(destination, '.dsh/session.json'), 'utf8'), '{"epoch":"old","text":"saved"}')
+  assert.match(await fs.readFile(join(f.dshHome, 'session.json'), 'utf8'), /third/)
 })
 
 test('a correctly signed desktop with the previous official bundled runtime is rejected before Host quiescence', async t => {

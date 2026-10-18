@@ -92,6 +92,34 @@ class ReleaseTests(unittest.TestCase):
         for channel in self.current["updates.json"]:
             self.assertEqual(unknown["updates.json"][channel]["publicKey"], "unchanged")
 
+    def test_automatic_following_requires_capable_client_and_keeps_new_epoch(self):
+        policy = {**self.policy, "automaticRelease": {"enabled": True}}
+        self.assertIsNone(release.automatic_release(policy, self.current, self.target))
+        current = copy.deepcopy(self.current)
+        current["desktop.json"]["followOfficial"] = True
+        self.assertIsNone(release.automatic_release({}, current, self.target))
+        expected = {**self.new, "followOfficial": True, "dataEpoch": "dsh-1.0.1"}
+        self.assertEqual(release.automatic_release(policy, current, self.target), expected)
+        proposed = release.proposed_files(current, self.target, expected)
+        self.assertEqual(proposed["desktop.json"], expected)
+        self.assertEqual(proposed["updates.json"], current["updates.json"])
+        for target in ({**self.target, "repository": "https://attacker.test/repo.git"}, self.old):
+            with self.assertRaises(ValueError):
+                release.automatic_release(policy, current, target)
+
+    def test_plan_uses_trusted_automatic_policy_without_per_release_transition(self):
+        current = copy.deepcopy(self.current)
+        current["desktop.json"]["followOfficial"] = True
+        api = Mock()
+        api.file.side_effect = lambda repo, path, ref: ({"automaticRelease": {"enabled": True}}
+            if path == "scripts/upstream-policy.json" else current[path])
+        api.pages.return_value = [candidate("1.0.1")]
+        with patch.object(release, "resolve_release", return_value=self.target):
+            target, eligible, files = release.plan(api, "owner/repo", BASE)
+        self.assertEqual(target, self.target)
+        self.assertEqual(eligible["dataEpoch"], "dsh-1.0.1")
+        self.assertEqual(files["updates.json"], current["updates.json"])
+
     def test_no_upgrade_and_closed_pr_deduplicate(self):
         api = Mock()
         api.request.return_value = {"object": {"sha": BASE}}
@@ -100,7 +128,7 @@ class ReleaseTests(unittest.TestCase):
                 release.discover(api, "owner/repo", "main")
                 output.assert_called_once_with(candidate="false")
             api.pages.return_value = [{"state": "closed"}]
-            with patch.object(release, "plan", return_value=(self.target, self.new, {})):
+            with patch.object(release, "plan", return_value=(self.target, self.new, {"desktop.json": self.new})):
                 release.discover(api, "owner/repo", "main")
             self.assertFalse(any(c.args[1:] for c in api.request.call_args_list))
 

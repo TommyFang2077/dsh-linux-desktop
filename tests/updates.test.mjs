@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import fsSync from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { UpdateManager, checkCompatibility, extractKernel, inventory, verifyFeed, verifyKernelTree } from '../build/update-core.mjs'
 
@@ -289,6 +290,51 @@ test('a new data epoch blocks both OTA channels before activation', async t => {
     assert.equal(f.manager.status()[channel].crossEpoch, true)
     assert.equal(JSON.stringify(f.manager.state), before)
   }
+})
+
+test('official-follow kernel download retains its real epoch and still enforces the shell interface', async t => {
+  const f = await fixture(t, { dataEpoch: 'rc2-data', nodeRange: '>=26 <27' })
+  f.manager.desktop = { ...f.manager.desktop, followOfficial: true }
+  const before = { ...f.manager.state }
+  await f.manager.check('kernel')
+  assert.equal(f.manager.status().kernel.available, f.release.version)
+  assert.equal(f.manager.status().kernel.crossEpoch, true)
+  await f.manager.prepareDownload('kernel')
+  assert.equal(f.manager.candidates.kernel.release.dataEpoch, 'rc2-data')
+  assert.deepEqual(f.manager.state, before)
+  await assert.rejects(f.manager.installKernel(async () => true, () => assert.fail('must use offline transaction')), /退出和备份/)
+  for (const change of [{ protocol: 5 }, { desktopRange: '>=5' }]) {
+    f.responses.set('https://updates.test/kernel.json', Buffer.from(JSON.stringify(signed({ ...f.release, ...change }))))
+    await assert.rejects(f.manager.check('kernel'), /桌面.*不兼容/)
+  }
+})
+
+test('the update window shows cross-epoch kernel interface failures in official-follow mode', async () => {
+  const elements = new Map()
+  const status = { busy: false, kernel: { version: '1.0.0', available: null, configured: true, crossEpoch: true, followOfficial: true },
+    desktop: { version: '1.0.0', configured: false }, desktopUpgrade: { configured: false } }
+  const context = { document: { querySelectorAll: () => [], getElementById: id => {
+    if (!elements.has(id)) elements.set(id, { textContent: '' })
+    return elements.get(id)
+  } }, window: { workbenchUpdates: { invoke: async action => ({ status,
+    ...(action === 'check' ? { error: '内核与桌面协议不兼容，请先更新桌面适配' } : {}) }) } }, setInterval: () => {} }
+  runInNewContext(await fs.readFile(new URL('../updates/updates.js', import.meta.url), 'utf8') + '\nglobalThis.testCheck = check', context)
+  await context.testCheck()
+  assert.match(elements.get('error').textContent, /请先更新桌面适配/)
+})
+
+test('an interrupted kernel migration never rolls back its pointer without restoring data', async t => {
+  const f = await fixture(t)
+  const migration = '12345678-1234-1234-1234-123456789abc'
+  f.manager.state = { schemaVersion: 1, active: f.release.asset.sha256, previous: null,
+    pending: 'booting', migration, dataEpoch: 'rc2-data' }
+  await f.manager.save()
+  const before = { ...f.manager.state }
+  await assert.rejects(f.manager.rollback(), /必须恢复旧数据/)
+  assert.deepEqual(f.manager.state, before)
+  const boot = new UpdateManager(f.options)
+  await assert.rejects(boot.boot(), /ENOENT|receipt/)
+  assert.deepEqual(JSON.parse(await fs.readFile(join(f.options.root, 'state.json'), 'utf8')), before)
 })
 
 test('explicit whole desktop checking admits a signed next epoch without changing the running identity', async t => {
@@ -593,6 +639,42 @@ test('Linux revisions order desktop rebuilds without changing or downgrading off
   feed({ ...release, linuxRevision: -1 })
   await assert.rejects(f.manager.check('desktop'), /构建号/)
   assert.equal(f.manager.status().desktop.latest, null)
+})
+
+test('a followed kernel already running on an older shell suppresses matching desktop bundles but retains repair fallbacks', async t => {
+  const f = await fixture(t)
+  f.manager.desktop = { ...f.manager.desktop, followOfficial: true, linuxRevision: 2 }
+  f.manager.config = { ...f.manager.config, desktopUpgrade: f.manager.config.desktop }
+  f.manager.selected = { ...f.manager.selected, version: '1.2.0' }
+  const release = { ...f.release, schemaVersion: 2, channel: 'desktop', format: 'tar.gz',
+    version: '1.2.0', linuxRevision: 3, nodeVersion: '24.18.1', kernelRange: '>=1 <3', electronVersion: '44.7.0' }
+  const feed = value => f.responses.set('https://updates.test/desktop.json', Buffer.from(JSON.stringify(signed(value))))
+  for (const version of ['1.2.0', '1.1.0']) {
+    feed({ ...release, version })
+    await f.manager.check('desktop')
+    await f.manager.checkWholeDesktopUpgrade()
+    assert.equal(f.manager.status().desktop.latest, version)
+    assert.equal(f.manager.status().desktopUpgrade.latest, version)
+    assert.equal(f.manager.status().desktop.available, null)
+    assert.equal(f.manager.status().desktopUpgrade.available, null)
+  }
+  feed({ ...release, version: '1.3.0' })
+  await f.manager.check('desktop')
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktop.available, '1.3.0')
+  assert.equal(f.manager.status().desktopUpgrade.available, '1.3.0')
+  f.manager.desktop = { ...f.manager.desktop, version: '1.2.0' }
+  feed(release)
+  await f.manager.check('desktop')
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktop.availableLinuxRevision, 3)
+  assert.equal(f.manager.status().desktopUpgrade.availableLinuxRevision, 3)
+  f.manager.desktop = { ...f.manager.desktop, version: '1.0.0' }
+  f.manager.selected = { ...f.manager.selected, version: '1.0.0' }
+  f.responses.set('https://updates.test/kernel.json', Buffer.from(JSON.stringify(signed({ ...f.release, protocol: 5 }))))
+  await assert.rejects(f.manager.check('kernel'), /不兼容/)
+  await f.manager.checkWholeDesktopUpgrade()
+  assert.equal(f.manager.status().desktopUpgrade.available, '1.2.0', 'a rejected kernel still permits full-shell adaptation')
 })
 
 test('desktop authorization/installer failure preserves kernel state and cleans the download', async t => {

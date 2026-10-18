@@ -1,10 +1,12 @@
 import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto'
 import { createReadStream } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import { dirname, join, posix } from 'node:path'
 import semver from 'semver'
 import * as tar from 'tar'
-import { startWholeDesktopUpgrade } from './whole-desktop.mjs'
+import { startWholeDesktopUpgrade, startKernelMigration, validateKernelMigration } from './whole-desktop.mjs'
 
 const MAX_DOWNLOAD = 1024 ** 3
 const MAX_UNPACKED = 4 * 1024 ** 3
@@ -61,6 +63,24 @@ export function checkCompatibility(kernel, desktop) {
     || !satisfies(desktop.version, kernel.desktopRange) || !satisfies(desktop.nodeVersion, kernel.nodeRange)) {
     fail('内核与桌面协议、数据格式或 Node 版本不兼容')
   }
+}
+
+/** The independently shipped runtime owns Node; the shell owns only the Host interface. */
+export function checkKernelInterface(kernel, desktop) {
+  if (kernel.protocol !== desktop.protocol || !satisfies(desktop.version, kernel.desktopRange)) {
+    fail('内核与桌面协议或版本不兼容，请先更新桌面适配')
+  }
+}
+
+export async function verifyKernelRuntime(root, release) {
+  const metadata = JSON.parse(await fs.readFile(join(root, 'runtime/primary-runtime/runtime.json'), 'utf8'))
+  if (metadata.platform !== 'linux' || metadata.arch !== 'x64' || !validVersion(metadata.node)
+    || !satisfies(metadata.node, release.nodeRange)) fail('目标内核自带 Node 版本不兼容')
+  const node = join(root, 'runtime/primary-runtime/dependencies/node/bin/node')
+  const result = await promisify(execFile)(node, ['--version'], {
+    env: { PATH: '/usr/bin:/bin' }, timeout: 15_000, maxBuffer: 1024,
+  })
+  if (result.stdout.trim() !== `v${metadata.node}`) fail('目标内核自带 Node 身份不匹配')
 }
 
 export async function fileHash(path) {
@@ -182,8 +202,8 @@ export async function atomicJson(path, value) {
 
 /** Separate channels share verification, never version state or installation destinations. */
 export class UpdateManager {
-  constructor({ root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract = extractKernel, fetch: transport = globalThis.fetch, signal }) {
-    Object.assign(this, { root, config, desktop, bundled, verifyKernel, probeKernel, onProgress, extract, fetch: transport, signal })
+  constructor({ root, config, desktop, bundled, migration, verifyKernel, probeKernel, onProgress, extract = extractKernel, fetch: transport = globalThis.fetch, signal }) {
+    Object.assign(this, { root, config, desktop, bundled, migration, verifyKernel, probeKernel, onProgress, extract, fetch: transport, signal })
     this.candidates = {}
     this.latest = {}
     this.downloaded = {}
@@ -204,7 +224,7 @@ export class UpdateManager {
       for (const ref of [value.active, value.previous]) if (ref !== null && !digest(ref)) fail('内核指针无效')
       this.state = value
     } catch (error) { if (error.code !== 'ENOENT') throw error }
-    if (this.state.pending === 'booting') await this.rollback('上次新内核启动中断，已恢复原内核')
+    if (this.state.pending === 'booting' && !this.state.migration) await this.rollback('上次新内核启动中断，已恢复原内核')
     if (this.state.active) {
       try {
         const selected = await this.readKernel(this.state.active, true)
@@ -214,7 +234,7 @@ export class UpdateManager {
           await this.save()
         }
       } catch (error) {
-        if (!this.state.pending) throw error
+        if (!this.state.pending || this.state.migration) throw error
         await this.rollback(`新内核校验失败，已回滚：${error.message}`)
         if (this.state.active) this.selected = await this.readKernel(this.state.active, true)
       }
@@ -235,8 +255,18 @@ export class UpdateManager {
       this.notice = '完整桌面已升级，使用自带内核；旧数据版本的内核文件保留，回退须恢复升级前数据备份'
       return this.bundled
     }
-    checkCompatibility(release, this.desktop)
+    if (this.state.migration) {
+      if (this.state.dataEpoch !== release.dataEpoch) fail('内核迁移状态与签名数据纪元不匹配')
+      const receipt = await validateKernelMigration({ ...this.migration, kernelRoot: this.root,
+        migration: this.state.migration, receipt: this.state.migrationReceipt, release })
+      if (receipt.phase === 'healthy' && this.state.pending) {
+        this.state = { ...this.state, pending: null }
+        await this.save()
+      }
+      checkKernelInterface(release, this.desktop)
+    } else checkCompatibility(release, this.desktop)
     await verifyKernelTree(directory, release)
+    if (this.state.migration) await verifyKernelRuntime(directory, release)
     await this.verifyKernel(join(directory, 'dsh'), release.version)
     return { ...release, dsh: join(directory, 'dsh'), runtime: join(directory, 'runtime'), id }
   }
@@ -248,19 +278,32 @@ export class UpdateManager {
     return this.config[channel]
   }
 
+  get dataEpoch() { return this.state.migration && this.selected.id === this.state.active ? this.selected.dataEpoch : this.desktop.dataEpoch }
+
+  validateKernelTarget(release) {
+    if (this.desktop.followOfficial === true) checkKernelInterface(release, this.desktop)
+    else checkCompatibility(release, this.desktop)
+  }
+
+  desktopAlreadyCovered(release) {
+    return this.desktop.followOfficial === true && semver.gt(this.selected.version, this.desktop.version)
+      && semver.lte(release.version, this.selected.version)
+  }
+
   status() {
     return {
       downloaded: { ...this.downloaded },
       busy: this.busy, progress: this.progress ?? '', notice: this.notice, restartRequired: this.state.pending === 'staged',
       kernel: { version: this.selected.version, bundledVersion: this.bundled.version,
+        followOfficial: this.desktop.followOfficial === true,
         available: this.candidates.kernel?.release.version ?? null, latest: this.latest.kernel?.version ?? null, configured: Boolean(this.config.kernel),
-        crossEpoch: Boolean(this.latest.kernel) && this.latest.kernel.dataEpoch !== this.desktop.dataEpoch },
+        crossEpoch: Boolean(this.latest.kernel) && this.latest.kernel.dataEpoch !== this.dataEpoch },
       desktop: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
         available: this.candidates.desktop?.release.version ?? null,
         availableLinuxRevision: this.candidates.desktop?.release.linuxRevision ?? null,
         latest: this.latest.desktop?.version ?? null, latestLinuxRevision: this.latest.desktop?.linuxRevision ?? null,
         configured: Boolean(this.config.desktop),
-        crossEpoch: Boolean(this.latest.desktop) && this.latest.desktop.dataEpoch !== this.desktop.dataEpoch },
+        crossEpoch: Boolean(this.latest.desktop) && this.latest.desktop.dataEpoch !== this.dataEpoch },
       desktopUpgrade: { version: this.desktop.version, linuxRevision: this.desktop.linuxRevision ?? 0,
         available: this.candidates.desktopUpgrade?.release.version ?? null,
         availableLinuxRevision: this.candidates.desktopUpgrade?.release.linuxRevision ?? null,
@@ -319,8 +362,9 @@ export class UpdateManager {
       const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       const release = verifyFeed(envelope, source.publicKey, channel)
       this.latest = { ...this.latest, [channel]: release }
-      if (release.dataEpoch !== this.desktop.dataEpoch) fail('新版本使用新的数据格式，普通更新不兼容；请使用「完整桌面升级」')
-      if (channel === 'kernel') checkCompatibility(release, this.desktop)
+      if (channel === 'desktop' && this.desktopAlreadyCovered(release)) return this.status()
+      if (release.dataEpoch !== this.dataEpoch && !(channel === 'kernel' && this.desktop.followOfficial === true)) fail('新版本使用新的数据格式，普通更新不兼容；请使用「完整桌面升级」')
+      if (channel === 'kernel') this.validateKernelTarget(release)
       else {
         checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
           dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
@@ -354,6 +398,7 @@ export class UpdateManager {
         fail('整包目标运行时元数据无效或不兼容')
       }
       this.latest.desktopUpgrade = release
+      if (this.desktopAlreadyCovered(release)) return this.status()
       if (semver.gt(release.version, this.desktop.version) || (semver.eq(release.version, this.desktop.version)
         && release.linuxRevision > (this.desktop.linuxRevision ?? 0))) {
         this.candidates.desktopUpgrade = { release, envelope }
@@ -386,8 +431,9 @@ export class UpdateManager {
     const candidate = this.candidates[channel] ?? fail('请先检查更新')
     const release = verifyFeed(candidate.envelope, this.source(channel).publicKey, channel)
     if (JSON.stringify(release) !== JSON.stringify(candidate.release)) fail('更新目标已改变，请重新检查')
-    if (release.dataEpoch !== this.desktop.dataEpoch) fail('数据格式不兼容，拒绝普通更新')
-    if (channel === 'kernel') checkCompatibility(release, this.desktop)
+    if (channel === 'desktop' && this.desktopAlreadyCovered(release)) fail('当前桌面已适配此内核，无需更换桌面壳')
+    if (release.dataEpoch !== this.dataEpoch && !(channel === 'kernel' && this.desktop.followOfficial === true)) fail('数据格式不兼容，拒绝普通更新')
+    if (channel === 'kernel') this.validateKernelTarget(release)
     else {
       checkCompatibility(this.selected, { version: release.version, protocol: release.protocol,
         dataEpoch: release.dataEpoch, nodeVersion: release.nodeVersion })
@@ -448,6 +494,7 @@ export class UpdateManager {
       const candidate = this.validatedCandidate('kernel')
       if (this.state.pending) fail('请先重启以完成待激活内核')
       const { release, envelope } = candidate
+      if (release.dataEpoch !== this.dataEpoch) fail('跨数据格式内核升级必须先完成退出和备份事务')
       checkCompatibility(release, this.desktop)
       await fs.mkdir(join(this.root, 'kernels'), { recursive: true, mode: 0o700 })
       const staging = await fs.mkdtemp(join(this.root, '.kernel-'))
@@ -486,6 +533,29 @@ export class UpdateManager {
     })
   }
 
+  /** Crossing real data epochs keeps the shell and uses the existing offline backup worker. */
+  async installKernelMigration(runtime, lifecycle) {
+    return this.exclusive(async () => {
+      if (this.state.pending) fail('请先完成待激活内核')
+      const { release, envelope } = this.validatedCandidate('kernel')
+      const directory = await fs.mkdtemp(join(this.root, '.kernel-migration-'))
+      try {
+        const archive = await this.cachedArchive('kernel', release.asset)
+        const payload = join(directory, 'payload')
+        await fs.mkdir(payload, { mode: 0o700 })
+        await this.extract(archive, payload)
+        await verifyKernelTree(payload, release)
+        await verifyKernelRuntime(payload, release)
+        await this.verifyKernel(join(payload, 'dsh'), release.version)
+        this.step('正在隔离环境中试启动新内核')
+        await this.probeKernel({ dsh: join(payload, 'dsh'), runtime: join(payload, 'runtime') })
+        return await startKernelMigration({ ...runtime, archive, envelope,
+          publicKey: this.source('kernel').publicKey, kernelRoot: this.root, desktop: this.desktop },
+        { ...lifecycle, extractKernel: this.extract })
+      } finally { await fs.rm(directory, { recursive: true, force: true }) }
+    })
+  }
+
   async installDesktop(prepareRestart, install, restart) {
     return this.exclusive(async () => {
       if (this.state.pending) fail('请先完成内核重启，再更新桌面端')
@@ -512,6 +582,7 @@ export class UpdateManager {
       const { envelope } = this.candidates.desktopUpgrade ?? fail('请先检查整包桌面升级')
       const publicKey = this.source('desktopUpgrade').publicKey
       const release = verifyFeed(envelope, publicKey, 'desktop')
+      if (this.desktopAlreadyCovered(release)) fail('当前桌面已适配此内核，无需更换桌面壳')
       const directory = await fs.mkdtemp(join(this.root, '.whole-desktop-'))
       try {
         const archive = join(directory, 'desktop.tar.gz')
@@ -527,11 +598,18 @@ export class UpdateManager {
   }
 
   async markHealthy() {
+    if (this.state.migration) {
+      const committed = JSON.parse(await fs.readFile(join(this.root, 'state.json'), 'utf8'))
+      if (committed.active !== this.state.active || committed.migration !== this.state.migration
+        || !committed.migrationReceipt) fail('内核健康状态缺少持久迁移回执')
+      this.state = committed
+    }
     if (this.state.pending === 'booting') { this.state.pending = null; await this.save() }
   }
 
   async rollback(message = '新内核启动失败，已恢复原内核') {
     if (!this.state.pending) return false
+    if (this.state.migration) fail('新内核迁移未完成；已保留备份，必须恢复旧数据后才能回退内核')
     this.state = { schemaVersion: 1, active: this.state.previous, previous: null, pending: null }
     this.notice = message
     await this.save()

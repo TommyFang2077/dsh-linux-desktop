@@ -46,6 +46,11 @@ jobs:
         with:
           name: ${{ inputs.artifact }}
           path: artifacts
+      - name: Reverify the pinned official published Release before signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: verify
+        run: python3 scripts/upstream-release.py
       - name: Sign verified data only on a fresh runner
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.signing_key }}
@@ -69,11 +74,10 @@ jobs:
             code=$?
             test "$code" = 2
           fi
-          node scripts/sign-release.mjs --check-promotion artifacts "$feed"
-          cp artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json "$feed/"
+          node scripts/sign-release.mjs --promote-feeds artifacts "$feed"
           git -C "$feed" config user.name 'github-actions[bot]'
           git -C "$feed" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          for file in artifacts/kernel-release/*-latest.json artifacts/desktop-release/*-latest.json; do
+          for file in "$feed"/*-latest.json; do
             git -C "$feed" add "$(basename "$file")"
           done
           if git -C "$feed" diff --cached --quiet; then exit 0; fi

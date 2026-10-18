@@ -110,9 +110,11 @@ test('GUI smoke asserts actual unified labels, all main channels and sandbox wit
   assert.ok(source.includes('preference.sandbox && preference.contextIsolation && !preference.nodeIntegration'))
   assert.ok(!source.includes("name: 'dsh 内核'"))
 })
-test('kernel smoke keeps one install, signed cache, real busy refusal and original staged/probe assertions', () => {
+test('kernel smoke refuses the busy install before its one confirmed install and keeps signed cache and probe assertions', () => {
   const source = sources['kernel-update-smoke.mjs']
-  assert.equal(source.match(/invoke\('install', 'kernel'\)/g)?.length, 1)
+  assert.equal(source.match(/invoke\('install', 'kernel'\)/g)?.length, 2)
+  assert.match(source, /const rejected = await updates\.evaluate\(\(\) => window\.workbenchUpdates\.invoke\('install', 'kernel'\)\)/)
+  assert.match(source, /Active tasks must block installation before the consent dialog/)
   assert.equal(source.match(/__workbenchSmokeConfirmation\.respond\(1\)/g)?.length, 1)
   for (const text of ['NODE_EXTRA_CA_CERTS: certificate', "sign(null, payload, keys.privateKey)",
     'await fileHash(cache), asset.sha256', "assert.equal(consent.options.defaultId, 0)",
@@ -125,7 +127,7 @@ test('kernel smoke keeps one install, signed cache, real busy refusal and origin
 
 test('kernel consent proceeds directly to verified normal exit without a second UI confirmation', () => {
   const source = sources['kernel-update-smoke.mjs']
-  const approval = 'await application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))'
+  const approval = 'application.evaluate(() => globalThis.__workbenchSmokeConfirmation.respond(1))'
   const approved = source.indexOf(approval)
   const postConsent = source.slice(approved, source.indexOf('application = undefined', approved))
   assert.doesNotMatch(postConsent, /confirmation.click|let confirmation|Install and Restart|application.windows/)

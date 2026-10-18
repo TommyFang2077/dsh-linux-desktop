@@ -139,11 +139,26 @@ def proposed_files(current, target, approved):
     desktop = approved or {**current["desktop.json"], "version": target["version"],
         "linuxRevision": current["desktop.json"]["linuxRevision"] + 1, "dataEpoch": "dsh-" + target["version"]}
     updates = json.loads(json.dumps(current["updates.json"]))
-    if not approved:
+    if not approved and not desktop.get("followOfficial"):
         for channel in ("kernel", "desktop"):
             old = updates[channel]["url"]
             updates[channel]["url"] = old.rsplit("/", 1)[0] + f"/{channel}-{desktop['dataEpoch']}-latest.json"
     return {"upstream.json": target, "desktop.json": desktop, "updates.json": updates}
+
+
+def automatic_release(policy, current, target):
+    """Eligibility schedules verification; it never certifies data compatibility."""
+    enabled = policy.get("automaticRelease", {}).get("enabled") is True
+    desktop = current["desktop.json"]
+    if not enabled or desktop.get("followOfficial") is not True:
+        return None
+    if current["upstream.json"]["repository"] != REPOSITORY or target["repository"] != REPOSITORY:
+        raise ValueError("Unofficial source")
+    if compare(target["version"], current["upstream.json"]["version"]) <= 0:
+        raise ValueError("Automatic releases must advance the official version")
+    # New data identity is deliberate. The client snapshots before kernel migration.
+    return {**desktop, "version": target["version"], "linuxRevision": desktop["linuxRevision"] + 1,
+            "dataEpoch": "dsh-" + target["version"]}
 
 
 def encode(value):
@@ -169,7 +184,7 @@ def plan(api, repo, base):
     if not release:
         return None
     target = resolve_release(api, release)
-    approved = compatibility(policy, current["upstream.json"], target, current["desktop.json"])
+    approved = automatic_release(policy, current, target) or compatibility(policy, current["upstream.json"], target, current["desktop.json"])
     return target, approved, proposed_files(current, target, approved)
 
 
@@ -183,6 +198,9 @@ def discover(api, repo, branch):
         return
     target, approved, files = result
     name = "automation/upstream-" + target["commit"]
+    if files["desktop.json"].get("followOfficial"):
+        # A fresh trusted base gets a fresh branch; never rewrite a tested candidate.
+        name += "-" + base[:12]
     prs = api.pages(f"/repos/{repo}/pulls?state=all&head={repo.split('/')[0]}:{name}")
     if any(pr["state"] == "closed" for pr in prs):
         output(candidate="false")
@@ -204,10 +222,10 @@ def discover(api, repo, branch):
             saved = api.request(f"/repos/{repo}/git/commits/{existing}")
             if saved["tree"]["sha"] != tree or [p["sha"] for p in saved["parents"]] != [base]:
                 raise ValueError("Existing automation branch requires manual review") from error
-        reason = "Exact-SHA compatibility evidence found; eligible after tests." if approved else "MANUAL REVIEW: compatibility unknown or incompatible. Automatic merge and signing are disabled."
+        reason = "Eligible only after package tests and the real previous-shell/new-kernel smoke test. Data epochs remain explicit; kernel migration requires a verified backup." if approved else "MANUAL ADAPTATION: automatic following is not enabled for this client. Automatic merge and signing are disabled."
         pr = api.request(f"/repos/{repo}/pulls", "POST", {"head": name, "base": branch,
             "title": f"Update official DeepSeek Harness to {target['version']}",
-            "body": f"Official Release only: https://github.com/{OFFICIAL}/releases/tag/dsh-v{target['version']}\nPinned commit: {target['commit']}\n\n{reason}\nCompatibility is never inferred from semver. Changes to this PR invalidate automatic promotion.", "draft": not bool(approved)})
+            "body": f"Official Release only: https://github.com/{OFFICIAL}/releases/tag/dsh-v{target['version']}\nPinned commit: {target['commit']}\n\n{reason}\nChanges to this PR invalidate automatic promotion.", "draft": not bool(approved)})
         pr = api.request(f"/repos/{repo}/pulls/{pr['number']}")
     output(candidate="true", eligible=str(bool(approved)).lower(), head=pr["head"]["sha"], base=base, pr=pr["number"])
 
@@ -224,7 +242,7 @@ def promote(api, repo, branch, base, head, number):
         raise ValueError("AI candidates are never automatically promoted")
     result = plan(api, repo, base)
     if not result or not result[1]:
-        raise ValueError("No exact trusted compatibility evidence")
+        raise ValueError("No trusted automatic-release policy or exact compatibility evidence")
     target, approved, files = result
     expected = expected_tree(api, repo, base, files)
     tested = api.request(f"/repos/{repo}/git/commits/{head}")

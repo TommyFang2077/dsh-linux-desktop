@@ -58,5 +58,18 @@
         "electronVersion": "44.7.0"
       }
     }
-  ]
+  ],
+  "automaticRelease": {
+    "enabled": true,
+    "bootstrap": {
+      "version": "0.2.1-alpha.5",
+      "linuxRevision": 3,
+      "dataEpoch": "dsh-0.2.1-alpha.4"
+    },
+    "shellBaseline": {
+      "version": "0.2.1-alpha.5",
+      "linuxRevision": 3,
+      "dataEpoch": "dsh-0.2.1-alpha.4"
+    }
+  }
 }

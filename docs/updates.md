@@ -1,5 +1,11 @@
 # 内核与 Linux 桌面独立更新
 
+## 官方内核跟随（2026-10-18）
+
+具有 `followOfficial: true` 的更新器使用稳定跟随源，优先更新内核和其自带运行时，保留当前 Electron 壳。新官方版本保留独立数据纪元，不再要求预先证明旧内核能使用新版的所有新功能。用户确认后使用现有外部迁移 worker 退出、检查写入者、完整备份和验证，再激活精确内核并重启同一壳。健康失败保留锁和快照，恢复须将程序状态与数据一起恢复；旧的普通同纪元路径保持原有规则。
+
+alpha.5-r2 须先通过原桌面通道安装 alpha.5-r3 过渡包，后续才能使用跨纪元独立内核更新。真实发布状态和验证证据见 [自动跟进](automatic-updates.md)。下文历史 epoch 专属 feed 与 alpha.1/alpha.2 路径继续为旧客户端保留。
+
 ## 独立更新与整包迁移
 
 - **内核**：完整 dsh、WebUI、私有 Host 和配套运行时安装到既有 Electron 用户数据目录的 `updates/kernels/<SHA256>`。保留 Ed25519、全量清单、协议、Node 范围、数据兼容标识、隔离试启动、原子激活与启动失败回滚。
@@ -79,11 +85,11 @@ node build/release-updates.mjs desktop \
 
 `.github/workflows/linux-updates.yml` 是只读权限、无生产签名 Secret 的可复用构建测试流程，覆盖 PR、main 和手动构建。它准备、测试并打包 deb/rpm 与用户归档，使用一次性临时密钥生成待签清单，再上传构建产物；一次性签名不受客户端信任，不能当作正式更新发布。
 
-发布入口有两个：显式推送匹配 `desktop.json` 的 `workbench-v<官方壳版本>-r<Linux构建号>` 标签（`linux-release.yml`），或 `upstream-release.yml` 每 6 小时发现官方 Release 后，依据默认分支受审查的精确 SHA 兼容记录通过构建、复核并合并升级 PR。未知兼容性只创建人工审查 PR；不追踪普通分支提交，不使用 `releases/latest` 选择预发布版本。
+发布入口有两个：显式推送匹配 `desktop.json` 的 `workbench-v<官方壳版本>-r<Linux构建号>` 标签（`linux-release.yml`），或 `upstream-release.yml` 每 6 小时发现官方 Release 后，依据可信主线开启的跟随策略，通过构建和已发布旧壳的真实内核迁移测试，再复核并合并升级 PR。启用跟随后无需逐个填写同纪元兼容记录；适配失败停止发布，旧客户端仍保留历史兼容门禁。不追踪普通分支提交，不使用 `releases/latest` 选择预发布版本。
 
-两条入口均直接调用 `publish-updates.yml`，避免 `GITHUB_TOKEN` 创建 PR/标签不触发下一工作流的问题。生产签名密钥仅进入独立新 runner 的签名步骤；该步骤执行受信仓库脚本、核对元数据与资产摘要，不执行下载的构建代码。顺序为验证与签名 → 草稿上传全部不可覆盖的版本化资产 → 公开发行 → 更新对应 epoch 清单。发布并发组串行提交并拒绝 feed 版本/构建号倒退，alpha.2 不覆盖 alpha.1 的旧根清单。发现/合并作业只按职责获得 contents、pull-requests 或 statuses 写权限；不强推、不绕过分支保护。
+两条入口均直接调用 `publish-updates.yml`，避免 `GITHUB_TOKEN` 创建 PR/标签不触发下一工作流的问题。生产签名密钥仅进入独立新 runner 的签名步骤；该步骤执行受信仓库脚本，重新验证官方 Release，核对元数据、资产摘要与内核适配报告，不执行下载的构建代码。顺序为验证与签名 → 草稿上传全部不可覆盖的版本化资产 → 公开发行 → 推进跟随清单。只有精确的 alpha.5-r3 过渡包同时推进旧 alpha.4 epoch 清单；后续内核不覆盖旧客户端的清单。发布并发组串行提交并拒绝 feed 版本/构建号倒退。发现/合并作业只按职责获得 contents、pull-requests 或 statuses 写权限；不强推、不绕过分支保护。
 
-需要配置既有公钥对应的 `DSH_WORKBENCH_UPDATE_SIGNING_KEY` 以及仓库权限。启用条件、兼容记录和失败恢复见 [自动更新策略与维护](automatic-updates.md)。本次开发不上传生产密钥、不推送源码、不创建标签、不对外发布。
+需要配置既有公钥对应的 `DSH_WORKBENCH_UPDATE_SIGNING_KEY` 以及仓库权限。启用条件、兼容记录和失败恢复见 [自动更新策略与维护](automatic-updates.md)。本次交付包含通过验证后的 GitHub 发布；真实用户安装仍由客户端确认。
 
 ## 验证
 

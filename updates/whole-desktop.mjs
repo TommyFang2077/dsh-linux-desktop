@@ -3,9 +3,9 @@ import { constants } from 'node:fs'
 import { join, resolve, dirname, sep, relative, isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { atomicJson, extractDesktop, fileHash, verifyFeed } from './core.mjs'
+import { atomicJson, checkKernelInterface, extractDesktop, extractKernel, fileHash, verifyFeed, verifyKernelTree, verifyKernelRuntime } from './core.mjs'
 import { detectUserDesktop, installUserDesktop, verifyUserDesktop } from './user-install.mjs'
-import { readDesktopRuntime } from '../build/upstream/apps/desktop/src/runtime-tree.ts'
+import { readDesktopRuntime, verifyDesktopRuntime } from '../build/upstream/apps/desktop/src/runtime-tree.ts'
 
 const fail = message => { throw new Error(message) }
 const within = (root, path) => path === root || path.startsWith(root + sep)
@@ -32,12 +32,23 @@ async function dataPath(home, path) {
   return path
 }
 
-async function verifiedArchive(request, destination) {
-  const release = verifyFeed(request.envelope, request.publicKey, 'desktop')
+async function verifiedArchive(request, destination, kernelExtractor = extractKernel) {
+  const channel = request.kind === 'kernel' ? 'kernel' : 'desktop'
+  const release = verifyFeed(request.envelope, request.publicKey, channel)
   const info = await fs.lstat(request.archive)
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== release.asset.size
     || await fileHash(request.archive) !== release.asset.sha256) fail('Signed desktop archive digest or size mismatch')
   await privateDirectory(destination)
+  if (channel === 'kernel') {
+    checkKernelInterface(release, request.desktop)
+    await kernelExtractor(request.archive, destination)
+    await verifyKernelTree(destination, release)
+    await verifyKernelRuntime(destination, release)
+    const runtime = await verifyDesktopRuntime(join(destination, 'dsh'), release.version, { platform: 'linux', arch: 'x64' })
+    if (runtime.release.hostProtocolVersion !== release.protocol) fail('Signed kernel Host protocol mismatch')
+    if (await fileHash(request.archive) !== release.asset.sha256) fail('Signed kernel archive changed during verification')
+    return release
+  }
   await extractDesktop(request.archive, destination)
   const metadata = await verifyUserDesktop(join(destination, 'app'), release.version, release.linuxRevision)
   for (const key of ['version', 'linuxRevision', 'protocol', 'dataEpoch', 'nodeVersion', 'nodeRange', 'desktopRange', 'kernelRange', 'electronVersion']) {
@@ -95,7 +106,7 @@ export async function assertWholeDesktopStartupAllowed({ home, dshHome, userData
 }
 
 /** Only the target Desktop's existing real Host-health callback may release the admission gate. */
-export async function markWholeDesktopHealthy({ home, version, executable, pid = process.pid,
+export async function markWholeDesktopHealthy({ home, version, executable, kernel, pid = process.pid,
   transactionId = process.env.DSH_WHOLE_DESKTOP_TRANSACTION }) {
   if (!transactionId) return
   const owner = JSON.parse(await fs.readFile(join(backupRoot(home), '.migration-lock/owner.json'), 'utf8'))
@@ -105,19 +116,37 @@ export async function markWholeDesktopHealthy({ home, version, executable, pid =
     await new Promise(resolve => setTimeout(resolve, 10))
     transaction.report = JSON.parse(await fs.readFile(join(transaction.directory, 'report.json'), 'utf8'))
   }
-  if (pid !== process.pid || version !== transaction.release.version || transaction.report.newDesktopPid !== pid
+  const targetMatches = transaction.kind === 'kernel'
+    ? kernel?.id === transaction.release.asset.sha256 && kernel.version === transaction.release.version
+      && kernel.dataEpoch === transaction.release.dataEpoch
+    : version === transaction.release.version
+  if (pid !== process.pid || !targetMatches || transaction.report.newDesktopPid !== pid
     || transaction.report.phase !== 'spawned' || await fs.realpath(executable) !== transaction.report.executable) fail('Healthy acknowledgement is not from the selected desktop')
-  await report(transaction, 'healthy', { healthyAt: new Date().toISOString() })
+  if (transaction.kind === 'kernel') {
+    const state = JSON.parse(await fs.readFile(join(transaction.kernelRoot, 'state.json'), 'utf8'))
+    if (state.active !== kernel.id || state.migration !== transaction.transactionId || state.dataEpoch !== kernel.dataEpoch) fail('Kernel healthy acknowledgement pointer mismatch')
+  }
+  const healthyAt = new Date().toISOString()
+  if (transaction.kind === 'kernel') {
+    const statePath = join(transaction.kernelRoot, 'state.json')
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8'))
+    await atomicJson(statePath, { ...state, pending: null, migrationReceipt: { schemaVersion: 1,
+      phase: 'healthy', transactionId, kernelId: kernel.id, version: kernel.version, dataEpoch: kernel.dataEpoch,
+      backupVerifiedAt: transaction.report.backupVerifiedAt, healthyAt } })
+  }
+  await report(transaction, 'healthy', { healthyAt })
   await releaseGate(transaction)
+  if (process.env.DSH_WHOLE_DESKTOP_TRANSACTION === transactionId) delete process.env.DSH_WHOLE_DESKTOP_TRANSACTION
 }
 
 /** Electron supplies only lifecycle adapters; signed bytes and the transaction stay in this module. */
 export async function startWholeDesktopUpgrade(request, lifecycle) {
-  verifyFeed(request.envelope, request.publicKey, 'desktop')
+  verifyFeed(request.envelope, request.publicKey, request.kind === 'kernel' ? 'kernel' : 'desktop')
   const home = await fs.realpath(request.home)
   if (home !== resolve(request.home)) fail('HOME must be runtime-resolved')
   const roots = [request.dshHome, request.userData, request.root, backupRoot(home)]
   for (const path of roots) await dataPath(home, path)
+  if (request.kind === 'kernel' && request.kernelRoot !== join(request.userData, 'updates')) fail('Kernel migration state must belong to the running userData')
   for (let i = 0; i < roots.length; i++) for (let j = i + 1; j < roots.length; j++) {
     if (within(roots[i], roots[j]) || within(roots[j], roots[i])) fail('Migration data, installation and backup roots must be disjoint')
   }
@@ -139,9 +168,9 @@ export async function startWholeDesktopUpgrade(request, lifecycle) {
   try {
     await privateDirectory(transaction.directory)
     await atomicJson(join(gate, 'owner.json'), { transactionId: transaction.transactionId, directory: transaction.directory })
-    transaction.release = await verifiedArchive(request, candidate)
-    transaction.installBytes = (await snapshot(join(candidate, 'app'))).filter(entry => entry.type === 'file').reduce((total, entry) => total + entry.size, 0)
-    transaction.archive = join(transaction.directory, 'desktop.tar.gz')
+    transaction.release = await verifiedArchive(request, candidate, lifecycle.extractKernel)
+    transaction.installBytes = (await snapshot(request.kind === 'kernel' ? candidate : join(candidate, 'app'))).filter(entry => entry.type === 'file').reduce((total, entry) => total + entry.size, 0)
+    transaction.archive = join(transaction.directory, request.kind === 'kernel' ? 'kernel.tar.gz' : 'desktop.tar.gz')
     await fs.copyFile(request.archive, transaction.archive, constants.COPYFILE_EXCL)
     await fs.chmod(transaction.archive, 0o600)
     if (await fileHash(transaction.archive) !== transaction.release.asset.sha256) fail('Transferred archive changed')
@@ -175,6 +204,31 @@ export async function startWholeDesktopUpgrade(request, lifecycle) {
     if (prepared) await lifecycle.recover()
     throw error
   } finally { await fs.rm(candidate, { recursive: true, force: true }) }
+}
+
+export function startKernelMigration(request, lifecycle) {
+  return startWholeDesktopUpgrade({ ...request, kind: 'kernel' }, lifecycle)
+}
+
+/** A different data epoch is admitted only by this kernel's durable, verified migration receipt. */
+export async function validateKernelMigration({ home, dshHome, userData, kernelRoot, migration, receipt, release }) {
+  if (typeof home !== 'string' || !/^[a-f0-9-]{36}$/.test(migration ?? '')) fail('Kernel migration receipt is missing')
+  if (receipt) {
+    if (receipt.schemaVersion !== 1 || receipt.phase !== 'healthy' || receipt.transactionId !== migration
+      || receipt.kernelId !== release.asset.sha256 || receipt.version !== release.version || receipt.dataEpoch !== release.dataEpoch
+      || !Number.isFinite(Date.parse(receipt.backupVerifiedAt)) || !Number.isFinite(Date.parse(receipt.healthyAt))
+      || Date.parse(receipt.backupVerifiedAt) > Date.parse(receipt.healthyAt)) fail('Invalid durable kernel migration receipt')
+    await assertWholeDesktopStartupAllowed({ home, dshHome, userData })
+    return receipt
+  }
+  const transaction = await readTransaction(join(backupRoot(home), migration, 'transaction.json'))
+  const signed = verifyFeed(transaction.envelope, transaction.publicKey, 'kernel')
+  if (transaction.kind !== 'kernel' || transaction.kernelRoot !== kernelRoot || transaction.userData !== userData
+    || signed.asset.sha256 !== release.asset.sha256 || signed.version !== release.version || signed.dataEpoch !== release.dataEpoch
+    || !transaction.report.backupVerifiedAt || !['spawned', 'healthy'].includes(transaction.report.phase)) fail('Kernel migration receipt does not authorize this data epoch')
+  if (transaction.report.phase !== 'healthy' && (process.env.DSH_WHOLE_DESKTOP_TRANSACTION !== migration
+    || transaction.report.newDesktopPid !== process.pid)) fail('Kernel migration requires the selected target process or explicit recovery')
+  return transaction.report
 }
 
 async function processIdentity(pid) {
@@ -367,6 +421,33 @@ async function captureInstallation(transaction) {
   return entries
 }
 
+async function activateKernel(transaction, prepareRestart) {
+  const root = transaction.kernelRoot
+  const staging = await fs.mkdtemp(join(transaction.directory, '.kernel-install-'))
+  try {
+    const release = await verifiedArchive(transaction, staging)
+    await atomicJson(join(staging, 'release.json'), transaction.envelope)
+    if (!await prepareRestart()) fail('Kernel migration cutover was refused')
+    await privateDirectory(root)
+    await privateDirectory(join(root, 'kernels'))
+    const destination = join(root, 'kernels', release.asset.sha256)
+    try { await fs.rename(staging, destination) } catch (error) {
+      if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error
+      await verifyKernelTree(destination, release)
+      const previous = verifyFeed(JSON.parse(await fs.readFile(join(destination, 'release.json'), 'utf8')), transaction.publicKey, 'kernel')
+      if (JSON.stringify(previous) !== JSON.stringify(release)) fail('Existing kernel release metadata mismatch')
+    }
+    let previous = null
+    try { previous = JSON.parse(await fs.readFile(join(root, 'state.json'), 'utf8')).active }
+    catch (error) { if (error.code !== 'ENOENT') throw error }
+    try {
+      await atomicJson(join(root, 'state.json'), { schemaVersion: 1, previous,
+        active: release.asset.sha256, pending: 'staged', dataEpoch: release.dataEpoch, migration: transaction.transactionId })
+    } catch (error) { error.activationUncertain = true; throw error }
+    return { executable: transaction.oldExecutable }
+  } finally { await fs.rm(staging, { recursive: true, force: true }) }
+}
+
 /** CLI boundary shared with the Electron handoff; no second mock-only backup path exists. */
 export async function runWholeDesktopMigration(path) {
   const transaction = await readTransaction(path)
@@ -424,14 +505,17 @@ export async function runWholeDesktopMigration(path) {
     await report(transaction, 'backup-verified', { backupVerifiedAt: new Date().toISOString(), backupBytes: bytes,
       installBytes: transaction.installBytes, requiredFreeBytes: String(requiredFreeBytes) })
     await report(transaction, 'installing')
-    const release = verifyFeed(transaction.envelope, transaction.publicKey, 'desktop')
-    const result = await installUserDesktop({ archive: transaction.archive, sha256: release.asset.sha256,
-      version: release.version, linuxRevision: release.linuxRevision, home: transaction.home, root: transaction.root,
-      xdgDataHome: transaction.xdgDataHome, prepareRestart: async () => {
-        await assertNoWriters(roots, inodes)
-        for (const root of manifest.roots) if (JSON.stringify(await snapshot(root.source)) !== JSON.stringify(root.entries)) fail('Source data changed before cutover')
-        return true
-      } })
+    const release = verifyFeed(transaction.envelope, transaction.publicKey, transaction.kind === 'kernel' ? 'kernel' : 'desktop')
+    const prepareRestart = async () => {
+      await assertNoWriters(roots, inodes)
+      for (const root of manifest.roots) if (JSON.stringify(await snapshot(root.source)) !== JSON.stringify(root.entries)) fail('Source data changed before cutover')
+      return true
+    }
+    const result = transaction.kind === 'kernel'
+      ? await activateKernel(transaction, prepareRestart)
+      : await installUserDesktop({ archive: transaction.archive, sha256: release.asset.sha256,
+        version: release.version, linuxRevision: release.linuxRevision, home: transaction.home, root: transaction.root,
+        xdgDataHome: transaction.xdgDataHome, prepareRestart })
     activated = true
     await report(transaction, 'spawned', { activatedAt: new Date().toISOString(), spawnedAt: new Date().toISOString(), executable: result.executable })
     const log = await fs.open(join(transaction.directory, 'desktop.log'), 'a', 0o600)
@@ -466,6 +550,7 @@ export async function runWholeDesktopMigration(path) {
     if (!activated && parentExited) {
       spawn(transaction.oldExecutable, [], { detached: true, stdio: 'ignore', env: { ...process.env,
         HOME: transaction.home, DSH_HOME: transaction.dshHome, ELECTRON_RUN_AS_NODE: undefined,
+        DSH_WHOLE_DESKTOP_TRANSACTION: undefined,
         DSH_WHOLE_DESKTOP_FAILED: error.message } }).on('error', () => {}).unref()
     }
     throw error
