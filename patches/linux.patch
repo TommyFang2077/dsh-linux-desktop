@@ -3249,7 +3249,7 @@ index 0fd9b591..79cc87e0 100644
  
  const roots: string[] = []
  afterEach(async () => {
-@@ -35,6 +35,29 @@ it('requires the Host authentication exchange and retains only its cookie value'
+@@ -35,6 +35,27 @@ it('requires the Host authentication exchange and retains only its cookie value'
    await expect(authenticateWebHost('http://127.0.0.1:1234/')).rejects.toThrow('authentication failed')
  })
  
@@ -3259,12 +3259,10 @@ index 0fd9b591..79cc87e0 100644
 +  // Host rejects it. Only the current launch may remain after this runs.
 +  const startUrl = 'http://127.0.0.1:4321/?token=owned'
 +  const removed: [string, string][] = []
++  // Only name and value are read; the remaining Electron Cookie fields are inert here.
++  const cookie = (name: string) => ({ name, value: 'v' }) as Electron.Cookie
 +  const jar = {
-+    get: vi.fn(async () => [
-+      { name: 'dsh-auth-old1', value: 'v' },
-+      { name: 'dsh-auth-old2', value: 'v' },
-+      { name: 'unrelated', value: 'keep' },
-+    ]),
++    get: vi.fn(async () => [cookie('dsh-auth-old1'), cookie('dsh-auth-old2'), cookie('unrelated')]),
 +    remove: vi.fn(async (url: string, name: string) => { removed.push([url, name]) }),
 +  }
 +  await forgetSupersededHostCookies(startUrl, jar)
