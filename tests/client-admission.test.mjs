@@ -371,6 +371,22 @@ test('pinned patched task admission uses real classes and reversible ownership',
       assert.equal(await control('lock', 'queued'), true)
     } finally { unregister(); await agent.scope.dispose(); await ctx.fiber.dispose() }
   })
+  await t.test('callers that inject only jobs or subagents still reach the shared gate', async () => {
+    // Cordis rebinds a service's `this.ctx` to the CALLER's fiber, which is how
+    // dsh-tool-subagent reaches `subagents` without injecting `agents`. An
+    // `this.ctx.agents` read there throws where `ctx.agents.updateAdmission`
+    // from an injecting test context passes, so probe from the real consumers.
+    const ctx = new c.Context()
+    await ctx.plugin(c.AgentRegistry); await ctx.plugin(c.SessionStore); await ctx.plugin(c.SessionProjectionRegistry)
+    await ctx.plugin(c.LocalJobRegistry, {})
+    class WorkingDirectory extends c.Service { constructor(ctx) { super(ctx, 'workingDirectory') } }
+    await ctx.plugin(WorkingDirectory); await ctx.plugin(c.SubagentRuntime, {})
+    try {
+      const gate = ctx.agents.updateAdmission
+      await ctx.plugin({ inject: ['jobs'], apply(caller) { assert.equal(caller.jobs.updateAdmission, gate) } })
+      await ctx.plugin({ inject: ['subagents'], apply(caller) { assert.equal(caller.subagents.updateAdmission, gate) } })
+    } finally { await ctx.fiber.dispose() }
+  })
   await t.test('due schedule stays admitted through resolve flush and commit and delivers once after release', async () => {
     const gate = new c.UpdateAdmissionGate(), resolving = deferred(), flushing = deferred(), committing = deferred()
     const effects = [], services = { agents: { updateAdmission: gate, list: () => [], withoutInitiator: work => gate.run(work) }, jobs: { updateAdmission: gate, list: () => [] } }
