@@ -3899,3 +3899,197 @@ index e8768927..392d4752 100644
  /** Welcome startup uses the Host before transitioning to the workspace. */
  
  import { afterEach, expect, it, vi } from 'vitest'
+diff --git a/apps/desktop/tests/expected/update-restart-darwin-en-US.json b/apps/desktop/tests/expected/update-restart-darwin-en-US.json
+index 744475cb..861951dd 100644
+--- a/apps/desktop/tests/expected/update-restart-darwin-en-US.json
++++ b/apps/desktop/tests/expected/update-restart-darwin-en-US.json
+@@ -2,6 +2,7 @@
+   "message": "Version 0.1.7-alpha.2 is ready to install",
+   "detail": "The app will close during the update and reopen automatically when it is complete.",
+   "buttons": [
+-    "Install and Restart"
++    "Install and Restart",
++    "Update later"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json b/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
+index 0bc196f7..9c4b4492 100644
+--- a/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
++++ b/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
+@@ -2,6 +2,7 @@
+   "message": "新版本 0.1.7-alpha.2 已准备就绪",
+   "detail": "更新期间应用将暂时关闭，完成后会自动打开。",
+   "buttons": [
+-    "安装并重启"
++    "安装并重启",
++    "稍后更新"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-win32-en-US.json b/apps/desktop/tests/expected/update-restart-win32-en-US.json
+index 71a7f432..dd19ad43 100644
+--- a/apps/desktop/tests/expected/update-restart-win32-en-US.json
++++ b/apps/desktop/tests/expected/update-restart-win32-en-US.json
+@@ -2,6 +2,7 @@
+   "message": "Version 0.1.7-alpha.2 is ready to install",
+   "detail": "The app will close temporarily during the update and reopen automatically when it is complete.\n\nThe update may take some time. Please wait and do not launch the app again during installation.",
+   "buttons": [
+-    "Install and Restart"
++    "Install and Restart",
++    "Update later"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-win32-zh-CN.json b/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
+index 520dda57..a9406a2c 100644
+--- a/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
++++ b/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
+@@ -2,6 +2,7 @@
+   "message": "新版本 0.1.7-alpha.2 已准备就绪",
+   "detail": "更新期间应用将暂时关闭，完成后会自动打开。\n\n更新可能需要一些时间，请耐心等待，期间请勿重复启动应用。",
+   "buttons": [
+-    "安装并重启"
++    "安装并重启",
++    "稍后更新"
+   ]
+ }
+diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
+index 9c08bf0a..9c2f0795 100644
+--- a/apps/desktop/tests/main-startup.spec.ts
++++ b/apps/desktop/tests/main-startup.spec.ts
+@@ -3,7 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
+ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+ import type { IpcMainInvokeEvent } from 'electron'
+ import { join } from 'node:path'
+-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
++import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
+ import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
+@@ -193,7 +193,8 @@ const harness = await vi.hoisted(async () => {
+     failWindow(error: Error) { windowFailure = error },
+     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
+     trays, FakeTray, backgroundNotice, shellDialog,
+-    menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
++    menu, popup, socketHeaders: vi.fn(), cookies: { get: vi.fn(), remove: vi.fn() },
++    loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
+     platformDispose,
+     platformCloseAndWait,
+ 
+@@ -293,7 +294,7 @@ vi.mock('electron', () => ({
+   session: { defaultSession: {
+     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
+     // Startup clears superseded Host cookies before the launch exchange.
+-    cookies: { get: vi.fn(async () => []), remove: vi.fn(async () => {}) },
++    cookies: harness.cookies,
+   } },
+   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
+   powerMonitor: harness.powerMonitor,
+@@ -427,6 +428,9 @@ beforeEach(() => {
+   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
+   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+   harness.analyticsEnabled = true
++  // `vi.clearAllMocks()` drops implementations, so restate the cookie jar each test.
++  harness.cookies.get.mockResolvedValue([])
++  harness.cookies.remove.mockResolvedValue(undefined)
+ })
+ 
+ afterEach(async () => {
+@@ -824,7 +828,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32', 'linux'] as const)('limits native titlebar styling to macOS on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -858,7 +862,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32'] as const)('relays the %s fullscreen state on transitions and after each load', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -881,7 +885,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['linux'] as const)('registers no fullscreen relay on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -922,7 +926,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['win32', 'linux'] as const)('registers no backdrop swap on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -998,11 +1002,16 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'linux'] as const)('adds the product File menu and standard window commands only on macOS (%s)', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const describeItem = (item: MenuItemConstructorOptions): string | undefined =>
+       item.role ?? (item.type === 'separator' ? 'separator' : item.label)
++    if (platform === 'linux') {
++      // Linux owns no application menu: the tray carries open, restart, and quit.
++      expect(harness.menu.setApplicationMenu).toHaveBeenLastCalledWith(null)
++      return
++    }
+     const template = harness.menu.buildFromTemplate.mock.calls
+       .map(call => call[0])
+       .find(items => items.some(item => item.role === 'editMenu'))
+@@ -1176,6 +1185,28 @@ describe('desktop main startup', () => {
+     expect(harness.openExternal).not.toHaveBeenCalled()
+   })
+ 
++
++  /**
++   * Pose as one platform for a startup import.
++   *
++   * Linux resolves a standalone Node and imports the separately built workbench
++   * module when packaged; this fixture supplies neither, so the Linux leg runs
++   * unpackaged against a temporary runtime that holds an executable Node. Window,
++   * menu, and relay behavior does not depend on those packaging differences.
++   */
++  function poseAsPlatform(platform: string): void {
++    harness.app.isPackaged = platform !== 'linux'
++    vi.stubGlobal('process', { ...process, platform, arch: 'x64', resourcesPath: 'desktop-test-resources' })
++    if (platform !== 'linux') return
++    const runtime = mkdtempSync(join(tmpdir(), 'dsh-main-linux-runtime-'))
++    onTestFinished(() => { rmSync(runtime, { recursive: true, force: true }) })
++    mkdirSync(join(runtime, 'dependencies', 'node', 'bin'), { recursive: true })
++    const node = join(runtime, 'dependencies', 'node', 'bin', 'node')
++    writeFileSync(node, '')
++    chmodSync(node, 0o755)
++    vi.stubEnv('DSH_DESKTOP_PRIMARY_RUNTIME_DIR', runtime)
++  }
++
+   async function readyForUpdate() {
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -1192,6 +1223,7 @@ describe('desktop main startup', () => {
+     ['darwin', ['--updated'], false],
+     ['linux', ['--updated'], false],
+   ] as const)('raises the first workspace only for a Windows installer restart (%s, %j)', async (platform, args, raises) => {
++    poseAsPlatform(platform)
+     vi.stubGlobal('process', { ...process, platform, argv: ['desktop', ...args] })
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -2296,7 +2328,7 @@ describe('desktop main startup', () => {
+     await harness.hostStarted.promise
+     const host = harness.hosts[0]!
+     host.fetch.mockReturnValueOnce(preferences.promise)
+-    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host is unavailable')
++    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host stopped before startup completed')
+     host.ready.resolve()
+     await vi.waitFor(() => { expect(host.fetch).toHaveBeenCalledOnce() })
+     host.exited.resolve()
