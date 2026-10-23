@@ -34,6 +34,29 @@ alpha.2 新增必需的 `working-directory/change` 会话事件，并将外部�
 
 归档由独立、内存受限的子进程通过原生文件系统解包，避免 Electron ASAR 虚拟路径截获；桌面产物不含无用的默认 ASAR 程序，使已发布的旧更新器也能解包。普通桌面更新先安排新程序路径，待安装器、暂存目录及安装锁完成清理后退出；整包迁移则将归档交给独立 worker，退出旧进程后才备份与切换。清单请求限制两分钟，完整载荷下载限制十分钟，仍校验签名声明的大小与摘要。
 
+## rc.2 插件市场更新失败时
+
+应用市场是用户 profile 中的独立插件。旧市场可能把已安装插件的更新作为首次安装提交，触发原生管理器的 `already-installed` 拒绝；随后再用同样的方法恢复旧版，又会误报恢复失败。市场增加卸载后重装逻辑后，热重载仍可能在安装途中卸载市场自身，使更新等待自身退出而无法完成。升级市场版本本身不证明这条链路已恢复。
+
+本机修复采用官方支持的“更新后重启生效”模式，不修改已签名内核或市场代码。完全退出应用、确认后台 Host 和插件进程均已结束后，备份实际 `DSH_HOME/profiles/desktop/cordis.patch.yml`，在现有补丁列表末尾增加：
+
+```yaml
+- id: hmr
+  disabled: true
+```
+
+保留原有补丁；空列表 `[]` 应替换为上面的列表，不能直接在 `[]` 后追加。完整重启后，原生管理器允许原地更新已安装插件，兼容检查、构建脚本审批、包操作锁及失败恢复继续执行。插件更新成功后，通过托盘正常重启，再使用新版本；组合包启停和 profile 补丁也须重启生效，运行中卸载可能仍要求先退出应用。
+
+该模式已用真实隔离 Host 的市场更新及重启验证，并运行原生管理器的安装失败、取消与保留旧运行版本回归。验收应同时检查市场操作成功、当前运行版本和重启后的插件状态，不能仅根据磁盘上的包版本判断生效。需要恢复热重载时，在完全退出应用后撤销这条补丁，再重启。
+
+## 子智能体派发失效（rc.2）
+
+`subagent` 与 `spawn_teammate` 曾以 `cannot get property "agents" without inject` 失败，而只读的成员列表仍可用。原因是任务准入补丁在 `SubagentRuntime` 和 `LocalJobRegistry` 上新增的 `updateAdmission` getter 直接读取 `this.ctx.agents`：Cordis 把服务读取时的 `this.ctx` 重绑为**调用方**的 fiber，而 `dsh-tool-subagent` 只注入 `subagents`，不注入 `agents`，于是取属性那一刻抛出，可选链无效。两处改为 `ctx.get('agents')` 的严格读取，与静态 `inject` 无关。回归用例从只注入 `jobs` 或 `subagents` 的调用方读取该门，旧写法会以相同错误失败。
+
+## 启动失败与累积的认证 cookie（rc.2）
+
+应用曾以 `desktop welcome: Web authentication failed` 启动失败。真因是 Electron cookie jar 里累积了数十个 `dsh-auth-*`：Host 的 cookie 名取自启动权威（含随机端口），每次启动都铸新名，旧名直到 30 天过期才消失。请求头累积到约 16 KiB 后超过 Host 的请求头上限，得到 431，而壳把所有非成功响应都译成认证失败，日志里看不到状态码。现在启动握手前先删除同 host 的旧 `dsh-auth-*`，并把 HTTP 状态码写进该错误信息。已有安装无需手动清理：升级后的首次启动会自行清掉旧条目。
+
 ## 版本与 Linux 构建号
 
 桌面 `version` 必须等于所复用官方壳源码的版本；构建时验证固定源码与元数据一致，不给 Linux 改动自增官方 alpha 编号。Linux 的重打包/适配变更只增加 `linuxRevision`。桌面更新按 `(官方版本, Linux 构建号)` 排序：同官方版本只接受更高构建号，不能用很大的构建号降级官方版本。三种产物名和发行标签同时包含这两个字段；deb 的 Version 为 `<version中的-替换为~>-<linuxRevision>`，rpm 的 Version 同样替换 `-` 为 `~`、Release 为 `<linuxRevision>`，不使用 CI run number；内核仍按其自己的版本更新。

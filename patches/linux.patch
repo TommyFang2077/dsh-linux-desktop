@@ -2338,11 +2338,17 @@ diff --git a/packages/jobs/jobs/src/index.ts b/packages/jobs/jobs/src/index.ts
 diff --git a/packages/jobs/jobs-local/src/index.ts b/packages/jobs/jobs-local/src/index.ts
 --- a/packages/jobs/jobs-local/src/index.ts
 +++ b/packages/jobs/jobs-local/src/index.ts
-@@ -128,6 +128,7 @@
+@@ -128,6 +128,13 @@
   * semantics this implementation honors.
   */
  export class LocalJobRegistry extends JobRegistry {
-+  override get updateAdmission(): Context['agents']['updateAdmission'] { return this.ctx.agents.updateAdmission }
++  override get updateAdmission(): Context['agents']['updateAdmission'] {
++    // Service reads rebind `this.ctx` to the CALLER's fiber; the strict store
++    // read resolves `agents` without depending on the caller's inject.
++    const agents = this.ctx.get('agents')
++    if (agents === undefined) throw new Error('background job admission requires the agent registry (load @deepseek-ai/dsh-agent)')
++    return agents.updateAdmission
++  }
    static Config: z<Config> = z.object({
      maxConcurrentJobsPerOwner: z.number()
        .step(1)
@@ -2977,16 +2983,23 @@ diff --git a/packages/subagent/subagent/src/manager.ts b/packages/subagent/subag
 diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagent/src/index.ts
 --- a/packages/subagent/subagent/src/index.ts
 +++ b/packages/subagent/subagent/src/index.ts
-@@ -204,6 +204,8 @@
+@@ -204,6 +204,15 @@
     * keys its carrier by this exact service instance, whose own context filter
     * composes into the carrier.
     */
-+  get updateAdmission(): Context['agents']['updateAdmission'] { return this.ctx.agents.updateAdmission }
++  get updateAdmission(): Context['agents']['updateAdmission'] {
++    // Service reads rebind `this.ctx` to the CALLER's fiber, which injects
++    // `subagents` but not necessarily `agents`; the strict store read keeps the
++    // lookup independent of caller inject topology.
++    const agents = this.ctx.get('agents')
++    if (agents === undefined) throw new SubagentError('the agents service is unavailable', 'AGENTS_UNAVAILABLE')
++    return agents.updateAdmission
++  }
 +
    private readonly emitLifecycle: LifecycleEmitter
  
    constructor(ctx: Context, private config: Config) {
-@@ -267,20 +269,22 @@
+@@ -267,20 +275,22 @@
     * childId requires a local backend and guarantees an accepted messageId.
     */
    async startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation> {
@@ -3004,7 +3017,7 @@ diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagen
 -    return provider.prepareContinuable === undefined
 -      ? manager.startExternal(spec)
 -      : manager.startLocal(spec)
-+    return this.ctx.agents.updateAdmission.run(async () => {
++    return this.updateAdmission.run(async () => {
 +      const provider = this.expectProvider(spec.provider)
 +      if (spec.childId !== undefined && provider.prepareContinuable === undefined) {
 +        throw new SubagentError('reserved child ids require a local backend', 'UNSUPPORTED_CAPABILITY')
@@ -3151,3 +3164,930 @@ diff --git a/apps/desktop/scripts/retain-desktop-ci.ts b/apps/desktop/scripts/re
    const windows = target === 'win-x64'
    const platform = windows ? 'win32' : 'darwin'
    const settings = loadDesktopPackageEnvironment(platform, env, appRoot, { unsigned: true })
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 2afdfd71..c42e1e58 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -36,7 +36,7 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+ import { desktopUpdateChannel } from './update-channel.ts'
+ import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+ import { DesktopCommandManager } from './command-management.ts'
+-import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
++import { serveWebDocument, authenticateWebHost, forgetSupersededHostCookies, forwardWebRequest } from './web-document.ts'
+ import { DesktopFatalRecovery } from './fatal-recovery.ts'
+ import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
+ import { openWelcomeWindow } from './welcome-window.ts'
+@@ -451,6 +451,9 @@ async function main(): Promise<void> {
+     return {
+       start: async () => {
+         const ready = await host.start()
++        // The Host names its cookie after a per-launch port, so old entries would
++        // otherwise accumulate until the request head exceeds the Host's limit.
++        await forgetSupersededHostCookies(ready.url, session.defaultSession.cookies)
+         hostCookie = await authenticateWebHost(ready.url)
+         hostUrl = ready.url
+         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
+diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
+index a74ea7c7..4645d61e 100644
+--- a/apps/desktop/src/web-document.ts
++++ b/apps/desktop/src/web-document.ts
+@@ -35,6 +35,29 @@ export async function serveWebDocument(request: Request, root: string): Promise<
+   })
+ }
+ 
++/**
++ * Drop superseded Host authentication cookies from the Electron session.
++ *
++ * The Host names its cookie after the launch authority, which includes the
++ * ephemeral port it listens on, so every launch mints a distinct cookie and
++ * none supersedes the last. Electron keeps them all until they expire, and the
++ * accumulated `Cookie` request header eventually exceeds the Host's 16 KiB
++ * request-head limit, which surfaces only as a failed launch. Removing every
++ * older `dsh-auth-` cookie before the exchange keeps the header to one entry.
++ *
++ * @param startUrl - Launch URL from the running Host; its host selects the jar entries.
++ * @param jar - Electron session cookies, or nothing when the host cannot clean.
++ * @returns Completion once superseded cookies are gone.
++ */
++export async function forgetSupersededHostCookies(
++  startUrl: string,
++  jar: Pick<Electron.Cookies, 'get' | 'remove'> | undefined,
++): Promise<void> {
++  if (jar === undefined) return
++  const stale = (await jar.get({ url: startUrl })).filter(cookie => cookie.name.startsWith('dsh-auth-'))
++  await Promise.all(stale.map(cookie => jar.remove(startUrl, cookie.name)))
++}
++
+ /**
+  * Exchange the Host launch URL for an authority-bound browser cookie.
+  * @param url - Authenticated URL reported by the owned Host process.
+diff --git a/apps/desktop/src/welcome-backend.ts b/apps/desktop/src/welcome-backend.ts
+index 54ab46d8..b881c3a6 100644
+--- a/apps/desktop/src/welcome-backend.ts
++++ b/apps/desktop/src/welcome-backend.ts
+@@ -48,7 +48,9 @@ export async function connectDesktopWelcome(
+   const origin = new URL(authenticatedUrl).origin
+   const authenticated = await send(authenticatedUrl, { credentials: 'include' })
+   await authenticated.body?.cancel()
+-  if (!authenticated.ok) throw new Error('desktop welcome: Web authentication failed')
++  // 431 means the request head outgrew the Host's limit, not a wrong credential;
++  // naming the status keeps that distinguishable from a real authentication denial.
++  if (!authenticated.ok) throw new Error(`desktop welcome: Web authentication failed (HTTP ${String(authenticated.status)})`)
+   const invoke = async (
+     request: { namespace: string; method: string; args: Record<string, unknown> },
+     signal?: AbortSignal,
+diff --git a/apps/desktop/tests/web-document.spec.ts b/apps/desktop/tests/web-document.spec.ts
+index 0fd9b591..79cc87e0 100644
+--- a/apps/desktop/tests/web-document.spec.ts
++++ b/apps/desktop/tests/web-document.spec.ts
+@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
+ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+-import { authenticateWebHost, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
++import { authenticateWebHost, forgetSupersededHostCookies, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
+ 
+ const roots: string[] = []
+ afterEach(async () => {
+@@ -35,6 +35,27 @@ it('requires the Host authentication exchange and retains only its cookie value'
+   await expect(authenticateWebHost('http://127.0.0.1:1234/')).rejects.toThrow('authentication failed')
+ })
+ 
++it('removes every superseded Host cookie before the launch exchange', async () => {
++  // The Host names its cookie after the launch authority, which carries a
++  // per-launch port; retaining older entries grows the Cookie header until the
++  // Host rejects it. Only the current launch may remain after this runs.
++  const startUrl = 'http://127.0.0.1:4321/?token=owned'
++  const removed: [string, string][] = []
++  // Only name and value are read; the remaining Electron Cookie fields are inert here.
++  const cookie = (name: string) => ({ name, value: 'v' }) as Electron.Cookie
++  const jar = {
++    get: vi.fn(async () => [cookie('dsh-auth-old1'), cookie('dsh-auth-old2'), cookie('unrelated')]),
++    remove: vi.fn(async (url: string, name: string) => { removed.push([url, name]) }),
++  }
++  await forgetSupersededHostCookies(startUrl, jar)
++  expect(jar.get).toHaveBeenCalledWith({ url: startUrl })
++  expect(removed).toEqual([[startUrl, 'dsh-auth-old1'], [startUrl, 'dsh-auth-old2']])
++})
++
++it('skips cookie cleanup when the session exposes no jar', async () => {
++  await expect(forgetSupersededHostCookies('http://127.0.0.1:4321/', undefined)).resolves.toBeUndefined()
++})
++
+ it('forwards upload bytes and cancellation with Host credentials while keeping the response streaming', async () => {
+   const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('stream')); controller.close() } })
+   const fetch = vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-encoding': 'gzip', 'set-cookie': 'private' } }))
+diff --git a/apps/desktop/tests/welcome-host.spec.ts b/apps/desktop/tests/welcome-host.spec.ts
+index dea29055..0c7aa5dd 100644
+--- a/apps/desktop/tests/welcome-host.spec.ts
++++ b/apps/desktop/tests/welcome-host.spec.ts
+@@ -108,6 +108,11 @@ describe('desktop welcome Web operations', () => {
+ 
+   it('refuses an unauthenticated Web launch', async () => {
+     const send = vi.fn<Parameters<typeof connectDesktopWelcome>[1]>(async () => new Response(null, { status: 401 }))
+-    await expect(connectDesktopWelcome(url, send)).rejects.toThrow('Web authentication failed')
++    await expect(connectDesktopWelcome(url, send)).rejects.toThrow('Web authentication failed (HTTP 401)')
++  })
++
++  it('names an oversized request head instead of reporting a credential failure', async () => {
++    const send = vi.fn<Parameters<typeof connectDesktopWelcome>[1]>(async () => new Response(null, { status: 431 }))
++    await expect(connectDesktopWelcome(url, send)).rejects.toThrow('Web authentication failed (HTTP 431)')
+   })
+ })
+diff --git a/apps/desktop/tests/background-notice.spec.ts b/apps/desktop/tests/background-notice.spec.ts
+index cfccf81d..636bb4bc 100644
+--- a/apps/desktop/tests/background-notice.spec.ts
++++ b/apps/desktop/tests/background-notice.spec.ts
+@@ -31,7 +31,7 @@ it('keeps the window visible until confirmation and remembers acknowledgement ac
+   f.notice.close(f.hide)
+   expect(f.hide).not.toHaveBeenCalled()
+   expect(existsSync(f.markerPath)).toBe(false)
+-  expect(f.show).toHaveBeenCalledExactlyOnceWith({ type: 'info', title: 'DeepSeek Harness',
++  expect(f.show).toHaveBeenCalledExactlyOnceWith({ type: 'info', title: 'dsh-workbench',
+     message: '正在运行的任务不会中断，可在系统托盘中重新打开窗口', buttons: ['确认'], defaultId: 0, cancelId: -1 })
+   expect(f.focus).toHaveBeenCalledOnce()
+   f.response.resolve({ response: 0, checkboxChecked: false })
+diff --git a/apps/desktop/tests/desktop-build-paths.spec.ts b/apps/desktop/tests/desktop-build-paths.spec.ts
+index ede5c5e3..2966d58c 100644
+--- a/apps/desktop/tests/desktop-build-paths.spec.ts
++++ b/apps/desktop/tests/desktop-build-paths.spec.ts
+@@ -55,7 +55,8 @@ describe('desktop build paths', () => {
+     expect(desktopTargetPlatform('mac-arm64')).toEqual({ platform: 'darwin', arch: 'arm64' })
+     expect(desktopTargetPlatform('mac-x64')).toEqual({ platform: 'darwin', arch: 'x64' })
+     expect(desktopTargetPlatform('win-x64')).toEqual({ platform: 'win32', arch: 'x64' })
+-    expect(() => desktopTargetPlatform('linux-x64' as 'mac-x64')).toThrow(/unsupported target/u)
++    expect(desktopTargetPlatform('linux-x64')).toEqual({ platform: 'linux', arch: 'x64' })
++    expect(() => desktopTargetPlatform('linux-arm64' as 'mac-x64')).toThrow(/unsupported target/u)
+   })
+ 
+   it('resolves environment overrides and rejects unsupported targets', () => {
+@@ -64,7 +65,7 @@ describe('desktop build paths', () => {
+       DSH_DESKTOP_TARGET_ARCH: 'x64',
+     }, 'darwin', 'arm64')).toBe('mac-x64')
+     expect(resolveDesktopBuildTarget({}, 'win32', 'x64')).toBe('win-x64')
+-    expect(() => resolveDesktopBuildTarget({}, 'linux', 'x64')).toThrow(/unsupported target/u)
+-    expect(() => desktopTargetBuildPaths('linux-x64' as 'mac-x64')).toThrow(/unsupported target/u)
++    expect(resolveDesktopBuildTarget({}, 'linux', 'x64')).toBe('linux-x64')
++    expect(() => resolveDesktopBuildTarget({}, 'linux', 'arm64')).toThrow(/unsupported target/u)
+   })
+ })
+diff --git a/apps/desktop/tests/expected/about-panel.json b/apps/desktop/tests/expected/about-panel.json
+index 8dc6ee90..d4a5b1bf 100644
+--- a/apps/desktop/tests/expected/about-panel.json
++++ b/apps/desktop/tests/expected/about-panel.json
+@@ -1,11 +1,11 @@
+ {
+   "darwin:en-US": {
+     "menu": [
+-      { "label": "About DeepSeek Harness", "role": "about" },
++      { "label": "About dsh-workbench", "role": "about" },
+       { "type": "separator" }
+     ],
+     "options": {
+-      "applicationName": "DeepSeek Harness",
++      "applicationName": "dsh-workbench",
+       "applicationVersion": "1.0.0",
+       "version": "",
+       "copyright": "",
+@@ -14,11 +14,11 @@
+   },
+   "darwin:zh-CN": {
+     "menu": [
+-      { "label": "关于 DeepSeek Harness", "role": "about" },
++      { "label": "关于 dsh-workbench", "role": "about" },
+       { "type": "separator" }
+     ],
+     "options": {
+-      "applicationName": "DeepSeek Harness",
++      "applicationName": "dsh-workbench",
+       "applicationVersion": "1.0.0",
+       "version": "",
+       "copyright": "",
+@@ -27,11 +27,11 @@
+   },
+   "win32:zh-CN": {
+     "menu": [
+-      { "label": "关于 DeepSeek Harness" },
++      { "label": "关于 dsh-workbench" },
+       { "type": "separator" }
+     ],
+     "options": {
+-      "applicationName": "DeepSeek Harness",
++      "applicationName": "dsh-workbench",
+       "applicationVersion": "1.0.0",
+       "version": "",
+       "copyright": "",
+@@ -40,11 +40,11 @@
+   },
+   "win32:en-US": {
+     "menu": [
+-      { "label": "About DeepSeek Harness" },
++      { "label": "About dsh-workbench" },
+       { "type": "separator" }
+     ],
+     "options": {
+-      "applicationName": "DeepSeek Harness",
++      "applicationName": "dsh-workbench",
+       "applicationVersion": "1.0.0",
+       "version": "",
+       "copyright": "",
+diff --git a/apps/desktop/tests/expected/application-menu-en-US.json b/apps/desktop/tests/expected/application-menu-en-US.json
+index 4e3c9819..7d4a8be7 100644
+--- a/apps/desktop/tests/expected/application-menu-en-US.json
++++ b/apps/desktop/tests/expected/application-menu-en-US.json
+@@ -7,7 +7,7 @@
+   },
+   {
+     "role": "hide",
+-    "label": "Hide DeepSeek Harness"
++    "label": "Hide dsh-workbench"
+   },
+   {
+     "role": "hideOthers",
+@@ -19,6 +19,6 @@
+   },
+   {
+     "role": "quit",
+-    "label": "Quit DeepSeek Harness"
++    "label": "Quit dsh-workbench"
+   }
+ ]
+diff --git a/apps/desktop/tests/expected/application-menu-zh-CN.json b/apps/desktop/tests/expected/application-menu-zh-CN.json
+index f39b2d88..906e3a77 100644
+--- a/apps/desktop/tests/expected/application-menu-zh-CN.json
++++ b/apps/desktop/tests/expected/application-menu-zh-CN.json
+@@ -7,7 +7,7 @@
+   },
+   {
+     "role": "hide",
+-    "label": "隐藏 DeepSeek Harness"
++    "label": "隐藏 dsh-workbench"
+   },
+   {
+     "role": "hideOthers",
+@@ -19,6 +19,6 @@
+   },
+   {
+     "role": "quit",
+-    "label": "退出 DeepSeek Harness"
++    "label": "退出 dsh-workbench"
+   }
+ ]
+diff --git a/apps/desktop/tests/expected/command-management-win32-en-US.json b/apps/desktop/tests/expected/command-management-win32-en-US.json
+index 34ee59a9..fa39d4ce 100644
+--- a/apps/desktop/tests/expected/command-management-win32-en-US.json
++++ b/apps/desktop/tests/expected/command-management-win32-en-US.json
+@@ -4,7 +4,7 @@
+       "type": "info",
+       "title": "Manage dsh Command",
+       "message": "Add the Desktop command to your terminal.",
+-      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "Install",
+         "Cancel"
+@@ -16,7 +16,7 @@
+       "type": "info",
+       "title": "Manage dsh Command",
+       "message": "The Desktop command is installed.",
+-      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nCurrent dsh command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nCurrent dsh command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "Close",
+         "Repair",
+@@ -29,7 +29,7 @@
+       "type": "info",
+       "title": "Manage dsh Command",
+       "message": "The Desktop command needs repair.",
+-      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "Close",
+         "Repair",
+@@ -42,7 +42,7 @@
+       "type": "warning",
+       "title": "Manage dsh Command",
+       "message": "The Desktop command is installed.",
+-      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nCurrent dsh command: C:\\Program Files\\nodejs\\dsh.cmd\n\nAnother dsh takes precedence. Remove or reorder that installation to use the Desktop command by default. You can also run the Desktop command by its full path.",
++      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nCurrent dsh command: C:\\Program Files\\nodejs\\dsh.cmd\n\nAnother dsh takes precedence. Remove or reorder that installation to use the Desktop command by default. You can also run the Desktop command by its full path.",
+       "buttons": [
+         "Close",
+         "Repair",
+@@ -55,7 +55,7 @@
+       "type": "info",
+       "title": "Manage dsh Command",
+       "message": "Add the Desktop command to your terminal.",
+-      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nYour shell command could not be verified. An alias or another dsh installation may take precedence.",
++      "detail": "Desktop command: C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\nYour shell command could not be verified. An alias or another dsh installation may take precedence.",
+       "buttons": [
+         "Install",
+         "Cancel"
+diff --git a/apps/desktop/tests/expected/command-management-win32-zh-CN.json b/apps/desktop/tests/expected/command-management-win32-zh-CN.json
+index c124453a..8d1d7c9e 100644
+--- a/apps/desktop/tests/expected/command-management-win32-zh-CN.json
++++ b/apps/desktop/tests/expected/command-management-win32-zh-CN.json
+@@ -4,7 +4,7 @@
+       "type": "info",
+       "title": "管理 dsh 命令",
+       "message": "将 Desktop 命令添加到终端。",
+-      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "安装",
+         "取消"
+@@ -16,7 +16,7 @@
+       "type": "info",
+       "title": "管理 dsh 命令",
+       "message": "Desktop 命令已安装。",
+-      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n当前 dsh 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n当前 dsh 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "关闭",
+         "修复",
+@@ -29,7 +29,7 @@
+       "type": "info",
+       "title": "管理 dsh 命令",
+       "message": "Desktop 命令需要修复。",
+-      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
++      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd",
+       "buttons": [
+         "关闭",
+         "修复",
+@@ -42,7 +42,7 @@
+       "type": "warning",
+       "title": "管理 dsh 命令",
+       "message": "Desktop 命令已安装。",
+-      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n当前 dsh 命令：C:\\Program Files\\nodejs\\dsh.cmd\n\n另一个 dsh 的优先级更高。请移除或调整该安装的顺序，以默认使用 Desktop 命令；也可以通过完整路径运行 Desktop 命令。",
++      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n当前 dsh 命令：C:\\Program Files\\nodejs\\dsh.cmd\n\n另一个 dsh 的优先级更高。请移除或调整该安装的顺序，以默认使用 Desktop 命令；也可以通过完整路径运行 Desktop 命令。",
+       "buttons": [
+         "关闭",
+         "修复",
+@@ -55,7 +55,7 @@
+       "type": "info",
+       "title": "管理 dsh 命令",
+       "message": "将 Desktop 命令添加到终端。",
+-      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n无法确认 shell 中的命令。别名或另一个 dsh 安装可能具有更高优先级。",
++      "detail": "Desktop 命令：C:\\Users\\user\\AppData\\Local\\Programs\\dsh-workbench\\resources\\runtime\\cli\\bin\\dsh.cmd\n\n无法确认 shell 中的命令。别名或另一个 dsh 安装可能具有更高优先级。",
+       "buttons": [
+         "安装",
+         "取消"
+diff --git a/apps/desktop/tests/expected/fatal-address-in-use-en.txt b/apps/desktop/tests/expected/fatal-address-in-use-en.txt
+index 1e9a9b62..5b776057 100644
+--- a/apps/desktop/tests/expected/fatal-address-in-use-en.txt
++++ b/apps/desktop/tests/expected/fatal-address-in-use-en.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness is unavailable
++dsh-workbench is unavailable
+ The application could not start or stopped unexpectedly.
+ Another DSH instance (such as dsh web or the desktop app) is running. They cannot start at the same time. Quit the other running DSH instance, then restart.
+ Exit
+diff --git a/apps/desktop/tests/expected/fatal-address-in-use-zh-CN.txt b/apps/desktop/tests/expected/fatal-address-in-use-zh-CN.txt
+index 30cad3d0..129643a6 100644
+--- a/apps/desktop/tests/expected/fatal-address-in-use-zh-CN.txt
++++ b/apps/desktop/tests/expected/fatal-address-in-use-zh-CN.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness 无法使用
++dsh-workbench 无法使用
+ 应用无法启动或已意外停止。
+ 有其他正在运行的 DSH（如其他 dsh web、桌面端），无法同时启动，请退出其他正在运行的 DSH 后重启。
+ 退出
+diff --git a/apps/desktop/tests/expected/fatal-dialog-en.txt b/apps/desktop/tests/expected/fatal-dialog-en.txt
+index 0dd0a62e..6a8d9d60 100644
+--- a/apps/desktop/tests/expected/fatal-dialog-en.txt
++++ b/apps/desktop/tests/expected/fatal-dialog-en.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness is unavailable
++dsh-workbench is unavailable
+ The application could not start or stopped unexpectedly.
+ Desktop Host failed
+ Plugin initialization failed
+diff --git a/apps/desktop/tests/expected/fatal-dialog-with-report-en.txt b/apps/desktop/tests/expected/fatal-dialog-with-report-en.txt
+index aaa637ca..24be041f 100644
+--- a/apps/desktop/tests/expected/fatal-dialog-with-report-en.txt
++++ b/apps/desktop/tests/expected/fatal-dialog-with-report-en.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness is unavailable
++dsh-workbench is unavailable
+ The application could not start or stopped unexpectedly.
+ Desktop Host failed
+ Plugin initialization failed
+diff --git a/apps/desktop/tests/expected/fatal-dialog-with-report-zh-CN.txt b/apps/desktop/tests/expected/fatal-dialog-with-report-zh-CN.txt
+index 353b59f4..1ce83d50 100644
+--- a/apps/desktop/tests/expected/fatal-dialog-with-report-zh-CN.txt
++++ b/apps/desktop/tests/expected/fatal-dialog-with-report-zh-CN.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness 无法使用
++dsh-workbench 无法使用
+ 应用无法启动或已意外停止。
+ Desktop Host failed
+ Plugin initialization failed
+diff --git a/apps/desktop/tests/expected/fatal-dialog-zh-CN.txt b/apps/desktop/tests/expected/fatal-dialog-zh-CN.txt
+index 6c40644c..ad7e2e9f 100644
+--- a/apps/desktop/tests/expected/fatal-dialog-zh-CN.txt
++++ b/apps/desktop/tests/expected/fatal-dialog-zh-CN.txt
+@@ -1,4 +1,4 @@
+-DeepSeek Harness 无法使用
++dsh-workbench 无法使用
+ 应用无法启动或已意外停止。
+ Desktop Host failed
+ Plugin initialization failed
+diff --git a/apps/desktop/tests/expected/welcome/en-api-key.expected.txt b/apps/desktop/tests/expected/welcome/en-api-key.expected.txt
+index 25c5a624..4905d8d2 100644
+--- a/apps/desktop/tests/expected/welcome/en-api-key.expected.txt
++++ b/apps/desktop/tests/expected/welcome/en-api-key.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ Add an API key to get started
+ Configure official DeepSeek models to start using Harness
+ Enter API key [password]
+diff --git a/apps/desktop/tests/expected/welcome/en-timeout.expected.txt b/apps/desktop/tests/expected/welcome/en-timeout.expected.txt
+index 2fa1f3a3..7836617a 100644
+--- a/apps/desktop/tests/expected/welcome/en-timeout.expected.txt
++++ b/apps/desktop/tests/expected/welcome/en-timeout.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ Sign in timed out
+ Sign in again
+ Add API Key
+diff --git a/apps/desktop/tests/expected/welcome/en-waiting.expected.txt b/apps/desktop/tests/expected/welcome/en-waiting.expected.txt
+index f6b5b8c1..810b09da 100644
+--- a/apps/desktop/tests/expected/welcome/en-waiting.expected.txt
++++ b/apps/desktop/tests/expected/welcome/en-waiting.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ Browser didn’t open automatically?
+ Copy sign-in link
+ Completing sign in… [disabled]
+diff --git a/apps/desktop/tests/expected/welcome/en.expected.txt b/apps/desktop/tests/expected/welcome/en.expected.txt
+index d559755d..498d8c72 100644
+--- a/apps/desktop/tests/expected/welcome/en.expected.txt
++++ b/apps/desktop/tests/expected/welcome/en.expected.txt
+@@ -1,6 +1,6 @@
+-DeepSeek Harness
+-DeepSeek Harness
+-Welcome to DeepSeek Harness
++dsh-workbench
++dsh-workbench
++Welcome to dsh-workbench
+ Build potential. Explore intelligence.
+ Sign in
+ Add API Key
+diff --git a/apps/desktop/tests/expected/welcome/zh-CN-api-key.expected.txt b/apps/desktop/tests/expected/welcome/zh-CN-api-key.expected.txt
+index 676a5505..7c83790e 100644
+--- a/apps/desktop/tests/expected/welcome/zh-CN-api-key.expected.txt
++++ b/apps/desktop/tests/expected/welcome/zh-CN-api-key.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ 添加一个 API Key 开始使用
+ 配置 DeepSeek 官方模型，即可开始使用
+ 输入 API 密钥 [password]
+diff --git a/apps/desktop/tests/expected/welcome/zh-CN-timeout.expected.txt b/apps/desktop/tests/expected/welcome/zh-CN-timeout.expected.txt
+index f44aa1da..f91e209e 100644
+--- a/apps/desktop/tests/expected/welcome/zh-CN-timeout.expected.txt
++++ b/apps/desktop/tests/expected/welcome/zh-CN-timeout.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ 登录已超时
+ 重新登录
+ 添加 API Key
+diff --git a/apps/desktop/tests/expected/welcome/zh-CN-waiting.expected.txt b/apps/desktop/tests/expected/welcome/zh-CN-waiting.expected.txt
+index faa7d733..0fb5cc62 100644
+--- a/apps/desktop/tests/expected/welcome/zh-CN-waiting.expected.txt
++++ b/apps/desktop/tests/expected/welcome/zh-CN-waiting.expected.txt
+@@ -1,5 +1,5 @@
+-DeepSeek Harness
+-DeepSeek Harness
++dsh-workbench
++dsh-workbench
+ 没有自动打开浏览器？
+ 复制登录链接
+ 正在完成登录… [disabled]
+diff --git a/apps/desktop/tests/expected/welcome/zh-CN.expected.txt b/apps/desktop/tests/expected/welcome/zh-CN.expected.txt
+index 7baf913b..033bc4f1 100644
+--- a/apps/desktop/tests/expected/welcome/zh-CN.expected.txt
++++ b/apps/desktop/tests/expected/welcome/zh-CN.expected.txt
+@@ -1,6 +1,6 @@
+-DeepSeek Harness
+-DeepSeek Harness
+-欢迎使用 DeepSeek Harness
++dsh-workbench
++dsh-workbench
++欢迎使用 dsh-workbench
+ 组装无限可能，共探智能上限
+ 登录
+ 添加 API Key
+diff --git a/apps/desktop/tests/host-process.spec.ts b/apps/desktop/tests/host-process.spec.ts
+index daeddc74..e7a94e55 100644
+--- a/apps/desktop/tests/host-process.spec.ts
++++ b/apps/desktop/tests/host-process.spec.ts
+@@ -31,7 +31,10 @@ server.listen(0, '127.0.0.1', () => {
+ })
+ process.on('message', message => {
+   if (message.type === 'update-tasks') {
+-    process.send({ type: 'update-tasks', requestId: message.requestId, active: message.action === 'lock' })
++    // The shell verifies the Host echoes the exact lease it requested and that
++    // the Host advertises the admission protocol version it implements.
++    process.send({ type: 'update-tasks', requestId: message.requestId, active: message.action === 'lock',
++      admissionVersion: 1, ...(message.token === undefined ? {} : { token: message.token }) })
+     return
+   }
+   if (message.type === 'quit-inspection') {
+diff --git a/apps/desktop/tests/host-update-tasks.spec.ts b/apps/desktop/tests/host-update-tasks.spec.ts
+index 52c92b52..b761e2bb 100644
+--- a/apps/desktop/tests/host-update-tasks.spec.ts
++++ b/apps/desktop/tests/host-update-tasks.spec.ts
+@@ -7,10 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { installDesktopUpdateTaskControl } from '../../desktop-host/src/update-tasks.ts'
+ 
+-type AgentState = { id: SessionId; status: 'idle' | 'running'; inbox: { nextTurn: object[]; nextStep: object[] } }
++type AgentState = { id: SessionId; status: 'idle' | 'running'; inbox: { nextTurn: object[]; nextStep: object[] }; updateAdmission?: unknown }
+ 
+ let ctx: Context
+ let inspect: ReturnType<typeof installDesktopUpdateTaskControl>
++/** The single gate every service and roster member must expose for admission to verify. */
++let gate: { version: 1; active: number; frozen: boolean; run<T>(work: () => T | Promise<T>): Promise<T>; release(token: string): boolean; freeze(owner: string): void; markUnknown(): void; onResume(listener: () => void): () => void }
+ const agents: AgentState[] = []
+ const jobs = new Map<SessionId | undefined, JobStatus[]>()
+ 
+@@ -43,14 +45,23 @@ beforeEach(() => {
+   jobs.clear()
+   ctx = new Context()
+   // Narrow service doubles exercise the inspector against a real Cordis event lifecycle.
+-  ctx.provide('agents', { list: () => agents } as unknown as Context['agents'])
++  // The inspector requires agents/jobs (and any subagents) to share one versioned
++  // admission gate; these doubles serve only the roster the inspector reads.
++  gate = { version: 1 as const, active: 0, frozen: false,
++    run: async <T>(work: () => T | Promise<T>) => work(), release: () => false,
++    freeze: () => {}, markUnknown: () => {}, onResume: () => () => {} }
++  ctx.provide('agents', { list: () => agents, updateAdmission: gate } as unknown as Context['agents'])
+   new RosterOnlyJobRegistry(ctx)
++  Object.defineProperty(ctx.get('jobs')!, 'updateAdmission', { value: gate, configurable: true })
+   inspect = installDesktopUpdateTaskControl(ctx)
+ })
+ 
+ afterEach(async () => { await ctx.fiber.dispose() })
+ 
+-function idleAgent(): AgentState { return { id: SessionId('update-task-owner'), status: 'idle', inbox: { nextTurn: [], nextStep: [] } } }
++/** Roster member carrying the shared admission gate the inspector verifies. */
++function idleAgent(updateAdmission?: unknown): AgentState {
++  return { id: SessionId('update-task-owner'), status: 'idle', inbox: { nextTurn: [], nextStep: [] }, updateAdmission }
++}
+ 
+ function request(next: () => Promise<void>) {
+   const incoming = Readable.from([]) as IncomingMessage
+@@ -60,7 +71,7 @@ function request(next: () => Promise<void>) {
+ 
+ describe('Desktop Host update task protection', () => {
+   it.each(['running', 'nextTurn', 'nextStep'] as const)('counts %s agent work without stopping it', async (kind) => {
+-    const agent = idleAgent()
++    const agent = idleAgent(gate)
+     if (kind === 'running') agent.status = 'running'
+     else agent.inbox[kind].push({ queued: true })
+     agents.push(agent)
+@@ -72,7 +83,7 @@ describe('Desktop Host update task protection', () => {
+   })
+ 
+   it.each(['running', 'stopping'] as const)('counts global and agent-owned %s jobs', async (status) => {
+-    const agent = idleAgent()
++    const agent = idleAgent(gate)
+     agents.push(agent)
+     for (const owner of [undefined, agent.id]) {
+       jobs.set(owner, [status])
+@@ -91,7 +102,7 @@ describe('Desktop Host update task protection', () => {
+       await entered.promise
+       expect(await inspect('inspect')).toBe(false)
+       let drained = false
+-      const locking = inspect('lock').then((active) => { drained = true; return active })
++      const locking = inspect('lock', 'lease').then((active) => { drained = true; return active })
+       const refused = request(next)
+       await refused.done
+       expect(refused.response.writeHead).toHaveBeenCalledWith(503)
+@@ -100,7 +111,7 @@ describe('Desktop Host update task protection', () => {
+       expect(drained).toBe(false)
+       finish.resolve(undefined)
+       expect(await locking).toBe(false)
+-      expect(await inspect('unlock')).toBe(false)
++      expect(await inspect('unlock', 'lease')).toBe(false)
+       const admitted = vi.fn(async () => {})
+       await request(admitted).done
+       expect(admitted).toHaveBeenCalledOnce()
+@@ -117,14 +128,14 @@ describe('Desktop Host update task protection', () => {
+     const pending = request(async () => {
+       entered.resolve(undefined)
+       await finish.promise
+-      const agent = idleAgent()
++      const agent = idleAgent(gate)
+       agent.inbox.nextTurn.push({ queued: true })
+       agents.push(agent)
+     })
+     try {
+       await entered.promise
+       expect(await inspect('inspect')).toBe(false)
+-      const locking = inspect('lock')
++      const locking = inspect('lock', 'lease')
+       finish.resolve(undefined)
+       expect(await locking).toBe(true)
+     } finally { finish.resolve(undefined); await pending.done }
+@@ -136,9 +147,9 @@ describe('Desktop Host update task protection', () => {
+     const pending = request(async () => { entered.resolve(undefined); await finish.promise })
+     try {
+       await entered.promise
+-      const locking = inspect('lock')
++      const locking = inspect('lock', 'lease')
+       const rejected = expect(locking).rejects.toThrow(action === 'unlock' ? 'lock was superseded' : 'Host is stopping')
+-      if (action === 'unlock') await inspect('unlock')
++      if (action === 'unlock') await inspect('unlock', 'lease')
+       else await ctx.fiber.dispose()
+       finish.resolve(undefined)
+       await rejected
+@@ -151,7 +162,7 @@ describe('Desktop Host update task protection', () => {
+   })
+ 
+   it('removes admission on disposal and refuses further inspection', async () => {
+-    expect(await inspect('lock')).toBe(false)
++    expect(await inspect('lock', 'lease')).toBe(false)
+     await ctx.fiber.dispose()
+     const next = vi.fn(async () => {})
+     await request(next).done
+diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
+index d9a8f310..9c08bf0a 100644
+--- a/apps/desktop/tests/main-startup.spec.ts
++++ b/apps/desktop/tests/main-startup.spec.ts
+@@ -16,7 +16,7 @@ import { writeCrashReport } from '../src/crash-report.ts'
+ type InvokeEvent = { sender?: unknown; senderFrame: { url: string } }
+ type InvokeHandler = (event: InvokeEvent, ...args: unknown[]) => unknown
+ 
+-vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
++vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', forgetSupersededHostCookies: vi.fn(async () => {}), serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
+ // Report persistence has its own unit tests; here it resolves within microtasks so the fatal
+ // dialog never outlives the test that triggered it.
+ vi.mock('../src/crash-report.ts', async importOriginal => ({
+@@ -292,6 +292,8 @@ vi.mock('electron', () => ({
+   Menu: { setApplicationMenu: harness.menu.setApplicationMenu, buildFromTemplate: harness.menu },
+   session: { defaultSession: {
+     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
++    // Startup clears superseded Host cookies before the launch exchange.
++    cookies: { get: vi.fn(async () => []), remove: vi.fn(async () => {}) },
+   } },
+   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
+   powerMonitor: harness.powerMonitor,
+@@ -555,7 +557,7 @@ describe('desktop main startup', () => {
+     await vi.advanceTimersByTimeAsync(0)
+     const zh = locale === 'zh-CN'
+     expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+-      type: 'info', title: zh ? '关于 DeepSeek Harness' : 'About DeepSeek Harness', message: 'DeepSeek Harness',
++      type: 'info', title: zh ? '关于 dsh-workbench' : 'About dsh-workbench', message: 'dsh-workbench',
+       detail: zh ? '版本 V1.0.0' : 'Version V1.0.0', buttons: [zh ? '确定' : 'OK'], cancelId: 0,
+     }))
+     // A dialog that cannot open is logged, not surfaced as an unhandled rejection.
+@@ -973,7 +975,7 @@ describe('desktop main startup', () => {
+     expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
+     const application = handler(event, 'application', 48, 34)
+     expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
+-      '关于 DeepSeek Harness', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
++      '关于 dsh-workbench', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
+     ])
+     expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
+     expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
+diff --git a/apps/desktop/tests/quit-confirmation.spec.ts b/apps/desktop/tests/quit-confirmation.spec.ts
+index e7843f6b..6de898e6 100644
+--- a/apps/desktop/tests/quit-confirmation.spec.ts
++++ b/apps/desktop/tests/quit-confirmation.spec.ts
+@@ -43,7 +43,7 @@ describe('DesktopQuitConfirmation', () => {
+     const f = setup('darwin', async () => ({ activeTasks: true, scheduledTasks: true }))
+     expect(await f.confirmation.confirm()).toBe(true)
+     expect(f.shown).toEqual([{
+-      type: 'warning', title: 'DeepSeek Harness', message: '退出 DeepSeek Harness？',
++      type: 'warning', title: 'dsh-workbench', message: '退出 dsh-workbench？',
+       detail: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
+       buttons: ['退出', '取消'], defaultId: 0, cancelId: 1, noLink: true,
+     }])
+@@ -54,7 +54,7 @@ describe('DesktopQuitConfirmation', () => {
+     f.answer(1)
+     expect(await f.confirmation.confirm()).toBe(false)
+     expect(f.shown).toEqual([{
+-      type: 'none', icon: f.icon, title: 'DeepSeek Harness', message: 'Quit DeepSeek Harness?',
++      type: 'none', icon: f.icon, title: 'dsh-workbench', message: 'Quit dsh-workbench?',
+       detail: 'Scheduled tasks will not run while the app is closed.',
+       buttons: ['Quit', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
+     }])
+diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
+index e8768927..392d4752 100644
+--- a/apps/desktop/tests/welcome-startup.spec.ts
++++ b/apps/desktop/tests/welcome-startup.spec.ts
+@@ -1,4 +1,4 @@
+-vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
++vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', forgetSupersededHostCookies: vi.fn(async () => {}), serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
+ /** Welcome startup uses the Host before transitioning to the workspace. */
+ 
+ import { afterEach, expect, it, vi } from 'vitest'
+diff --git a/apps/desktop/tests/expected/update-restart-darwin-en-US.json b/apps/desktop/tests/expected/update-restart-darwin-en-US.json
+index 744475cb..861951dd 100644
+--- a/apps/desktop/tests/expected/update-restart-darwin-en-US.json
++++ b/apps/desktop/tests/expected/update-restart-darwin-en-US.json
+@@ -2,6 +2,7 @@
+   "message": "Version 0.1.7-alpha.2 is ready to install",
+   "detail": "The app will close during the update and reopen automatically when it is complete.",
+   "buttons": [
+-    "Install and Restart"
++    "Install and Restart",
++    "Update later"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json b/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
+index 0bc196f7..9c4b4492 100644
+--- a/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
++++ b/apps/desktop/tests/expected/update-restart-darwin-zh-CN.json
+@@ -2,6 +2,7 @@
+   "message": "新版本 0.1.7-alpha.2 已准备就绪",
+   "detail": "更新期间应用将暂时关闭，完成后会自动打开。",
+   "buttons": [
+-    "安装并重启"
++    "安装并重启",
++    "稍后更新"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-win32-en-US.json b/apps/desktop/tests/expected/update-restart-win32-en-US.json
+index 71a7f432..dd19ad43 100644
+--- a/apps/desktop/tests/expected/update-restart-win32-en-US.json
++++ b/apps/desktop/tests/expected/update-restart-win32-en-US.json
+@@ -2,6 +2,7 @@
+   "message": "Version 0.1.7-alpha.2 is ready to install",
+   "detail": "The app will close temporarily during the update and reopen automatically when it is complete.\n\nThe update may take some time. Please wait and do not launch the app again during installation.",
+   "buttons": [
+-    "Install and Restart"
++    "Install and Restart",
++    "Update later"
+   ]
+ }
+diff --git a/apps/desktop/tests/expected/update-restart-win32-zh-CN.json b/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
+index 520dda57..a9406a2c 100644
+--- a/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
++++ b/apps/desktop/tests/expected/update-restart-win32-zh-CN.json
+@@ -2,6 +2,7 @@
+   "message": "新版本 0.1.7-alpha.2 已准备就绪",
+   "detail": "更新期间应用将暂时关闭，完成后会自动打开。\n\n更新可能需要一些时间，请耐心等待，期间请勿重复启动应用。",
+   "buttons": [
+-    "安装并重启"
++    "安装并重启",
++    "稍后更新"
+   ]
+ }
+diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
+index 9c08bf0a..9c2f0795 100644
+--- a/apps/desktop/tests/main-startup.spec.ts
++++ b/apps/desktop/tests/main-startup.spec.ts
+@@ -3,7 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
+ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+ import type { IpcMainInvokeEvent } from 'electron'
+ import { join } from 'node:path'
+-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
++import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
+ import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
+@@ -193,7 +193,8 @@ const harness = await vi.hoisted(async () => {
+     failWindow(error: Error) { windowFailure = error },
+     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
+     trays, FakeTray, backgroundNotice, shellDialog,
+-    menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
++    menu, popup, socketHeaders: vi.fn(), cookies: { get: vi.fn(), remove: vi.fn() },
++    loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
+     platformDispose,
+     platformCloseAndWait,
+ 
+@@ -293,7 +294,7 @@ vi.mock('electron', () => ({
+   session: { defaultSession: {
+     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
+     // Startup clears superseded Host cookies before the launch exchange.
+-    cookies: { get: vi.fn(async () => []), remove: vi.fn(async () => {}) },
++    cookies: harness.cookies,
+   } },
+   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
+   powerMonitor: harness.powerMonitor,
+@@ -427,6 +428,9 @@ beforeEach(() => {
+   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
+   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+   harness.analyticsEnabled = true
++  // `vi.clearAllMocks()` drops implementations, so restate the cookie jar each test.
++  harness.cookies.get.mockResolvedValue([])
++  harness.cookies.remove.mockResolvedValue(undefined)
+ })
+ 
+ afterEach(async () => {
+@@ -824,7 +828,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32', 'linux'] as const)('limits native titlebar styling to macOS on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -858,7 +862,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32'] as const)('relays the %s fullscreen state on transitions and after each load', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -881,7 +885,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['linux'] as const)('registers no fullscreen relay on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -922,7 +926,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['win32', 'linux'] as const)('registers no backdrop swap on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -998,11 +1002,16 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'linux'] as const)('adds the product File menu and standard window commands only on macOS (%s)', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const describeItem = (item: MenuItemConstructorOptions): string | undefined =>
+       item.role ?? (item.type === 'separator' ? 'separator' : item.label)
++    if (platform === 'linux') {
++      // Linux owns no application menu: the tray carries open, restart, and quit.
++      expect(harness.menu.setApplicationMenu).toHaveBeenLastCalledWith(null)
++      return
++    }
+     const template = harness.menu.buildFromTemplate.mock.calls
+       .map(call => call[0])
+       .find(items => items.some(item => item.role === 'editMenu'))
+@@ -1176,6 +1185,28 @@ describe('desktop main startup', () => {
+     expect(harness.openExternal).not.toHaveBeenCalled()
+   })
+ 
++
++  /**
++   * Pose as one platform for a startup import.
++   *
++   * Linux resolves a standalone Node and imports the separately built workbench
++   * module when packaged; this fixture supplies neither, so the Linux leg runs
++   * unpackaged against a temporary runtime that holds an executable Node. Window,
++   * menu, and relay behavior does not depend on those packaging differences.
++   */
++  function poseAsPlatform(platform: string): void {
++    harness.app.isPackaged = platform !== 'linux'
++    vi.stubGlobal('process', { ...process, platform, arch: 'x64', resourcesPath: 'desktop-test-resources' })
++    if (platform !== 'linux') return
++    const runtime = mkdtempSync(join(tmpdir(), 'dsh-main-linux-runtime-'))
++    onTestFinished(() => { rmSync(runtime, { recursive: true, force: true }) })
++    mkdirSync(join(runtime, 'dependencies', 'node', 'bin'), { recursive: true })
++    const node = join(runtime, 'dependencies', 'node', 'bin', 'node')
++    writeFileSync(node, '')
++    chmodSync(node, 0o755)
++    vi.stubEnv('DSH_DESKTOP_PRIMARY_RUNTIME_DIR', runtime)
++  }
++
+   async function readyForUpdate() {
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -1192,6 +1223,7 @@ describe('desktop main startup', () => {
+     ['darwin', ['--updated'], false],
+     ['linux', ['--updated'], false],
+   ] as const)('raises the first workspace only for a Windows installer restart (%s, %j)', async (platform, args, raises) => {
++    poseAsPlatform(platform)
+     vi.stubGlobal('process', { ...process, platform, argv: ['desktop', ...args] })
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -2296,7 +2328,7 @@ describe('desktop main startup', () => {
+     await harness.hostStarted.promise
+     const host = harness.hosts[0]!
+     host.fetch.mockReturnValueOnce(preferences.promise)
+-    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host is unavailable')
++    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host stopped before startup completed')
+     host.ready.resolve()
+     await vi.waitFor(() => { expect(host.fetch).toHaveBeenCalledOnce() })
+     host.exited.resolve()
