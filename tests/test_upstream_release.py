@@ -336,6 +336,14 @@ class RepairTests(unittest.TestCase):
             self.assertEqual(merge, [])
             self.output_mock.assert_called_with(approved=MERGED, merge="human-native-only", release="false")
 
+    def test_repository_linux_patch_passes_the_release_probe_parser(self):
+        patch_text = (Path(__file__).parents[1] / repair.PATCH).read_text()
+        paths = repair.patch_shape(patch_text)
+        self.assertIn("apps/desktop/src/main.ts", paths)
+        self.assertIn("apps/desktop/tests/main-startup.spec.ts", paths)
+        with self.assertRaisesRegex(ValueError, "duplicate patch path"):
+            repair.patch_shape(OLD_PATCH + OLD_PATCH)
+
     def test_protected_security_semantics_and_new_paths_are_rejected(self):
         protected = OLD_PATCH.replace(SCRIPT, "packages/subagent/subagent/src/manager.ts")
         with self.assertRaisesRegex(ValueError, "Protected path"):

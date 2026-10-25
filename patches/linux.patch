@@ -506,9 +506,10 @@ diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 2afdfd7..936d0a6 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -2,8 +2,8 @@
+@@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
  import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
  /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
  
@@ -519,7 +520,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
  import { fileURLToPath } from 'node:url'
  import {
    app,
-@@ -29,6 +29,7 @@
+@@ -29,6 +29,7 @@ import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-vi
  import { installDesktopDirectoryPicker } from './directory-picker.ts'
  import { installMicrophonePermissions } from './microphone-permissions.ts'
  import { DesktopBackendController } from './backend-controller.ts'
@@ -527,7 +528,16 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
  import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
  import { readDeviceInfo } from './device-info.ts'
  import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
-@@ -54,7 +55,7 @@
+@@ -36,7 +37,7 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
+ import { desktopUpdateChannel } from './update-channel.ts'
+ import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+ import { DesktopCommandManager } from './command-management.ts'
+-import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
++import { serveWebDocument, authenticateWebHost, forgetSupersededHostCookies, forwardWebRequest } from './web-document.ts'
+ import { DesktopFatalRecovery } from './fatal-recovery.ts'
+ import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
+ import { openWelcomeWindow } from './welcome-window.ts'
+@@ -54,7 +55,7 @@ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
  import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
  import { readDesktopSettings } from './settings.ts'
  import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
@@ -536,7 +546,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
  import { DesktopBrowserGuests } from './browser-guests.ts'
  import { installDesktopShortcuts } from './keyboard.ts'
  import { DesktopUpdateOverlays } from './update-overlay.ts'
-@@ -70,6 +71,8 @@
+@@ -70,6 +71,8 @@ let shuttingDown = false
   * development restart command. The installer handoff has its own before-quit branch.
   */
  let skipQuitConfirmation = false
@@ -545,7 +555,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
  let windowsLanguage: string | undefined
  /**
   * Whether the backend has reached ready: false until the first ready, back to
-@@ -97,7 +100,7 @@
+@@ -97,7 +100,7 @@ const recovery = new DesktopFatalRecovery({
    show: options => dialog.showMessageBox(options),
    stop: () => { shuttingDown = true; return stopForRecovery() },
    disablePlugins: async () => {
@@ -554,7 +564,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -150,9 +153,52 @@
+@@ -150,9 +153,52 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -609,12 +619,10 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -160,6 +206,62 @@
-   const dsh = (development ? process.env.DSH_DESKTOP_DSH_DIR : undefined)
-     ?? (development ? join(app.getAppPath(), '.desktop-build', 'development', 'project') : join(app.getAppPath(), 'dsh'))
+@@ -162,6 +208,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
-+}
-+
+ }
+ 
 +/** Check a candidate Host and WebUI without reading the user's profile or credentials. */
 +async function probeWorkbenchKernel(kernel: { dsh: string; runtime: string }): Promise<void> {
 +  const version = readDesktopRuntime(kernel.dsh).release.version
@@ -669,10 +677,12 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
 +    }
 +    await rm(temporary, { recursive: true, force: true })
 +  }
- }
- 
++}
++
  function developmentPrimaryRuntime(): string {
-@@ -315,16 +417,60 @@
+   const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
+   if (directory === undefined || directory === '') {
+@@ -315,16 +417,60 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
  }
  
  async function main(): Promise<void> {
@@ -738,7 +748,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -445,7 +591,11 @@
+@@ -445,12 +591,19 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -751,7 +761,15 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
        primaryRuntime,
        resources, (next) => { platformView.setSession(next) })
      return {
-@@ -511,8 +661,9 @@
+       start: async () => {
+         const ready = await host.start()
++        // The Host names its cookie after a per-launch port, so old entries would
++        // otherwise accumulate until the request head exceeds the Host's limit.
++        await forgetSupersededHostCookies(ready.url, session.defaultSession.cookies)
+         hostCookie = await authenticateWebHost(ready.url)
+         hostUrl = ready.url
+         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
+@@ -511,8 +664,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -763,7 +781,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -567,76 +718,121 @@
+@@ -567,76 +721,121 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -941,7 +959,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      undefined, undefined, undefined,
      (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
      updateChannel,
-@@ -932,7 +1128,7 @@
+@@ -932,7 +1131,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -950,7 +968,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -959,7 +1155,10 @@
+@@ -959,7 +1158,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -962,7 +980,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -981,19 +1180,22 @@
+@@ -981,19 +1183,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -989,7 +1007,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1232,7 +1434,9 @@
+@@ -1232,7 +1437,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -1000,7 +1018,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1247,6 +1451,7 @@
+@@ -1247,6 +1454,7 @@ async function main(): Promise<void> {
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -1008,7 +1026,7 @@ diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1282,6 +1487,7 @@
+@@ -1282,6 +1490,7 @@ async function main(): Promise<void> {
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }
@@ -1275,20 +1293,27 @@ diff --git a/apps/desktop/tests/tray.spec.ts b/apps/desktop/tests/tray.spec.ts
    f.tray.dispose()
    expect(f.native.destroy).toHaveBeenCalledOnce()
 diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
+index 7915248..392d475 100644
 --- a/apps/desktop/tests/welcome-startup.spec.ts
 +++ b/apps/desktop/tests/welcome-startup.spec.ts
-@@ -106,6 +106,10 @@
- vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
+@@ -1,4 +1,4 @@
+-vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
++vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', forgetSupersededHostCookies: vi.fn(async () => {}), serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
+ /** Welcome startup uses the Host before transitioning to the workspace. */
+ 
+ import { afterEach, expect, it, vi } from 'vitest'
+@@ -107,6 +107,10 @@ vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
    ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
    readDesktopLoginShellEnvironment: async (base: NodeJS.ProcessEnv) => ({ environment: base, failures: [] }),
-+}))
+ }))
 +vi.mock('../src/node-environment.ts', async importOriginal => ({
 +  ...await importOriginal<typeof import('../src/node-environment.ts')>(),
 +  resolveDesktopHostNode: async (_primary: string, electron: string) => process.platform === 'linux' ? '/runtime/node' : electron,
- }))
++}))
  vi.mock('../src/project-manager.ts', () => ({ DesktopProjectManager: class {
    applyRelease = vi.fn(async () => {})
-@@ -262,7 +266,7 @@
+   canRecoverProfile = vi.fn(() => true)
+@@ -262,7 +266,7 @@ it.each([false, true])('starts welcome onboarding without carrying update focus
    expect(state.menu).toHaveBeenCalledTimes(initialMenus)
    changed(event, 'en')
    expect(state.dialogLocale!().id).toBe('en')
@@ -3164,29 +3189,6 @@ diff --git a/apps/desktop/scripts/retain-desktop-ci.ts b/apps/desktop/scripts/re
    const windows = target === 'win-x64'
    const platform = windows ? 'win32' : 'darwin'
    const settings = loadDesktopPackageEnvironment(platform, env, appRoot, { unsigned: true })
-diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 2afdfd71..c42e1e58 100644
---- a/apps/desktop/src/main.ts
-+++ b/apps/desktop/src/main.ts
-@@ -36,7 +36,7 @@ import { claimDesktopSingleInstance } from './single-instance.ts'
- import { desktopUpdateChannel } from './update-channel.ts'
- import { DesktopUpdateCoordinator } from './update-coordinator.ts'
- import { DesktopCommandManager } from './command-management.ts'
--import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
-+import { serveWebDocument, authenticateWebHost, forgetSupersededHostCookies, forwardWebRequest } from './web-document.ts'
- import { DesktopFatalRecovery } from './fatal-recovery.ts'
- import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
- import { openWelcomeWindow } from './welcome-window.ts'
-@@ -451,6 +451,9 @@ async function main(): Promise<void> {
-     return {
-       start: async () => {
-         const ready = await host.start()
-+        // The Host names its cookie after a per-launch port, so old entries would
-+        // otherwise accumulate until the request head exceeds the Host's limit.
-+        await forgetSupersededHostCookies(ready.url, session.defaultSession.cookies)
-         hostCookie = await authenticateWebHost(ready.url)
-         hostUrl = ready.url
-         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
 diff --git a/apps/desktop/src/web-document.ts b/apps/desktop/src/web-document.ts
 index a74ea7c7..4645d61e 100644
 --- a/apps/desktop/src/web-document.ts
@@ -3826,9 +3828,18 @@ index 52c92b52..b761e2bb 100644
      const next = vi.fn(async () => {})
      await request(next).done
 diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
-index d9a8f310..9c08bf0a 100644
+index d9a8f31..9c2f079 100644
 --- a/apps/desktop/tests/main-startup.spec.ts
 +++ b/apps/desktop/tests/main-startup.spec.ts
+@@ -3,7 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
+ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+ import type { IpcMainInvokeEvent } from 'electron'
+ import { join } from 'node:path'
+-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
++import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
+ import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
 @@ -16,7 +16,7 @@ import { writeCrashReport } from '../src/crash-report.ts'
  type InvokeEvent = { sender?: unknown; senderFrame: { url: string } }
  type InvokeHandler = (event: InvokeEvent, ...args: unknown[]) => unknown
@@ -3838,16 +3849,36 @@ index d9a8f310..9c08bf0a 100644
  // Report persistence has its own unit tests; here it resolves within microtasks so the fatal
  // dialog never outlives the test that triggered it.
  vi.mock('../src/crash-report.ts', async importOriginal => ({
-@@ -292,6 +292,8 @@ vi.mock('electron', () => ({
+@@ -193,7 +193,8 @@ const harness = await vi.hoisted(async () => {
+     failWindow(error: Error) { windowFailure = error },
+     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
+     trays, FakeTray, backgroundNotice, shellDialog,
+-    menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
++    menu, popup, socketHeaders: vi.fn(), cookies: { get: vi.fn(), remove: vi.fn() },
++    loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
+     platformDispose,
+     platformCloseAndWait,
+ 
+@@ -292,6 +293,8 @@ vi.mock('electron', () => ({
    Menu: { setApplicationMenu: harness.menu.setApplicationMenu, buildFromTemplate: harness.menu },
    session: { defaultSession: {
      setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
 +    // Startup clears superseded Host cookies before the launch exchange.
-+    cookies: { get: vi.fn(async () => []), remove: vi.fn(async () => {}) },
++    cookies: harness.cookies,
    } },
    protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
    powerMonitor: harness.powerMonitor,
-@@ -555,7 +557,7 @@ describe('desktop main startup', () => {
+@@ -425,6 +428,9 @@ beforeEach(() => {
+   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
+   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+   harness.analyticsEnabled = true
++  // `vi.clearAllMocks()` drops implementations, so restate the cookie jar each test.
++  harness.cookies.get.mockResolvedValue([])
++  harness.cookies.remove.mockResolvedValue(undefined)
+ })
+ 
+ afterEach(async () => {
+@@ -555,7 +561,7 @@ describe('desktop main startup', () => {
      await vi.advanceTimersByTimeAsync(0)
      const zh = locale === 'zh-CN'
      expect(harness.dialog.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -3856,7 +3887,43 @@ index d9a8f310..9c08bf0a 100644
        detail: zh ? '版本 V1.0.0' : 'Version V1.0.0', buttons: [zh ? '确定' : 'OK'], cancelId: 0,
      }))
      // A dialog that cannot open is logged, not surfaced as an unhandled rejection.
-@@ -973,7 +975,7 @@ describe('desktop main startup', () => {
+@@ -822,7 +828,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32', 'linux'] as const)('limits native titlebar styling to macOS on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -856,7 +862,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'win32'] as const)('relays the %s fullscreen state on transitions and after each load', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -879,7 +885,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['linux'] as const)('registers no fullscreen relay on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -920,7 +926,7 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['win32', 'linux'] as const)('registers no backdrop swap on %s', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const window = harness.windows[0]!
+@@ -973,7 +979,7 @@ describe('desktop main startup', () => {
      expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
      const application = handler(event, 'application', 48, 34)
      expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
@@ -3865,6 +3932,70 @@ index d9a8f310..9c08bf0a 100644
      ])
      expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
      expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
+@@ -996,11 +1002,16 @@ describe('desktop main startup', () => {
+   })
+ 
+   it.each(['darwin', 'linux'] as const)('adds the product File menu and standard window commands only on macOS (%s)', async (platform) => {
+-    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
++    poseAsPlatform(platform)
+     await import('../src/main.ts')
+     await harness.preparing.promise
+     const describeItem = (item: MenuItemConstructorOptions): string | undefined =>
+       item.role ?? (item.type === 'separator' ? 'separator' : item.label)
++    if (platform === 'linux') {
++      // Linux owns no application menu: the tray carries open, restart, and quit.
++      expect(harness.menu.setApplicationMenu).toHaveBeenLastCalledWith(null)
++      return
++    }
+     const template = harness.menu.buildFromTemplate.mock.calls
+       .map(call => call[0])
+       .find(items => items.some(item => item.role === 'editMenu'))
+@@ -1174,6 +1185,28 @@ describe('desktop main startup', () => {
+     expect(harness.openExternal).not.toHaveBeenCalled()
+   })
+ 
++
++  /**
++   * Pose as one platform for a startup import.
++   *
++   * Linux resolves a standalone Node and imports the separately built workbench
++   * module when packaged; this fixture supplies neither, so the Linux leg runs
++   * unpackaged against a temporary runtime that holds an executable Node. Window,
++   * menu, and relay behavior does not depend on those packaging differences.
++   */
++  function poseAsPlatform(platform: string): void {
++    harness.app.isPackaged = platform !== 'linux'
++    vi.stubGlobal('process', { ...process, platform, arch: 'x64', resourcesPath: 'desktop-test-resources' })
++    if (platform !== 'linux') return
++    const runtime = mkdtempSync(join(tmpdir(), 'dsh-main-linux-runtime-'))
++    onTestFinished(() => { rmSync(runtime, { recursive: true, force: true }) })
++    mkdirSync(join(runtime, 'dependencies', 'node', 'bin'), { recursive: true })
++    const node = join(runtime, 'dependencies', 'node', 'bin', 'node')
++    writeFileSync(node, '')
++    chmodSync(node, 0o755)
++    vi.stubEnv('DSH_DESKTOP_PRIMARY_RUNTIME_DIR', runtime)
++  }
++
+   async function readyForUpdate() {
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -1190,6 +1223,7 @@ describe('desktop main startup', () => {
+     ['darwin', ['--updated'], false],
+     ['linux', ['--updated'], false],
+   ] as const)('raises the first workspace only for a Windows installer restart (%s, %j)', async (platform, args, raises) => {
++    poseAsPlatform(platform)
+     vi.stubGlobal('process', { ...process, platform, argv: ['desktop', ...args] })
+     await import('../src/main.ts')
+     await harness.preparing.promise
+@@ -2294,7 +2328,7 @@ describe('desktop main startup', () => {
+     await harness.hostStarted.promise
+     const host = harness.hosts[0]!
+     host.fetch.mockReturnValueOnce(preferences.promise)
+-    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host is unavailable')
++    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host stopped before startup completed')
+     host.ready.resolve()
+     await vi.waitFor(() => { expect(host.fetch).toHaveBeenCalledOnce() })
+     host.exited.resolve()
 diff --git a/apps/desktop/tests/quit-confirmation.spec.ts b/apps/desktop/tests/quit-confirmation.spec.ts
 index e7843f6b..6de898e6 100644
 --- a/apps/desktop/tests/quit-confirmation.spec.ts
@@ -3887,16 +4018,6 @@ index e7843f6b..6de898e6 100644
        detail: 'Scheduled tasks will not run while the app is closed.',
        buttons: ['Quit', 'Cancel'], defaultId: 0, cancelId: 1, noLink: true,
      }])
-diff --git a/apps/desktop/tests/welcome-startup.spec.ts b/apps/desktop/tests/welcome-startup.spec.ts
-index e8768927..392d4752 100644
---- a/apps/desktop/tests/welcome-startup.spec.ts
-+++ b/apps/desktop/tests/welcome-startup.spec.ts
-@@ -1,4 +1,4 @@
--vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
-+vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', forgetSupersededHostCookies: vi.fn(async () => {}), serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
- /** Welcome startup uses the Host before transitioning to the workspace. */
- 
- import { afterEach, expect, it, vi } from 'vitest'
 diff --git a/apps/desktop/tests/expected/update-restart-darwin-en-US.json b/apps/desktop/tests/expected/update-restart-darwin-en-US.json
 index 744475cb..861951dd 100644
 --- a/apps/desktop/tests/expected/update-restart-darwin-en-US.json
@@ -3949,145 +4070,3 @@ index 520dda57..a9406a2c 100644
 +    "稍后更新"
    ]
  }
-diff --git a/apps/desktop/tests/main-startup.spec.ts b/apps/desktop/tests/main-startup.spec.ts
-index 9c08bf0a..9c2f0795 100644
---- a/apps/desktop/tests/main-startup.spec.ts
-+++ b/apps/desktop/tests/main-startup.spec.ts
-@@ -3,7 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from '../src/windows-layout.ts'
- import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
- import type { IpcMainInvokeEvent } from 'electron'
- import { join } from 'node:path'
--import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
- import { tmpdir } from 'node:os'
- import type { MenuItemConstructorOptions, MessageBoxOptions } from 'electron'
- import { DESKTOP_IPC, type DesktopUpdateState } from '../src/ipc.ts'
-@@ -193,7 +193,8 @@ const harness = await vi.hoisted(async () => {
-     failWindow(error: Error) { windowFailure = error },
-     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme, analytics,
-     trays, FakeTray, backgroundNotice, shellDialog,
--    menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
-+    menu, popup, socketHeaders: vi.fn(), cookies: { get: vi.fn(), remove: vi.fn() },
-+    loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
-     platformDispose,
-     platformCloseAndWait,
- 
-@@ -293,7 +294,7 @@ vi.mock('electron', () => ({
-   session: { defaultSession: {
-     setPermissionCheckHandler: vi.fn(), setPermissionRequestHandler: vi.fn(), webRequest: { onBeforeSendHeaders: harness.socketHeaders },
-     // Startup clears superseded Host cookies before the launch exchange.
--    cookies: { get: vi.fn(async () => []), remove: vi.fn(async () => {}) },
-+    cookies: harness.cookies,
-   } },
-   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
-   powerMonitor: harness.powerMonitor,
-@@ -427,6 +428,9 @@ beforeEach(() => {
-   vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
-   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
-   harness.analyticsEnabled = true
-+  // `vi.clearAllMocks()` drops implementations, so restate the cookie jar each test.
-+  harness.cookies.get.mockResolvedValue([])
-+  harness.cookies.remove.mockResolvedValue(undefined)
- })
- 
- afterEach(async () => {
-@@ -824,7 +828,7 @@ describe('desktop main startup', () => {
-   })
- 
-   it.each(['darwin', 'win32', 'linux'] as const)('limits native titlebar styling to macOS on %s', async (platform) => {
--    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-+    poseAsPlatform(platform)
-     await import('../src/main.ts')
-     await harness.preparing.promise
-     const window = harness.windows[0]!
-@@ -858,7 +862,7 @@ describe('desktop main startup', () => {
-   })
- 
-   it.each(['darwin', 'win32'] as const)('relays the %s fullscreen state on transitions and after each load', async (platform) => {
--    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-+    poseAsPlatform(platform)
-     await import('../src/main.ts')
-     await harness.preparing.promise
-     const window = harness.windows[0]!
-@@ -881,7 +885,7 @@ describe('desktop main startup', () => {
-   })
- 
-   it.each(['linux'] as const)('registers no fullscreen relay on %s', async (platform) => {
--    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-+    poseAsPlatform(platform)
-     await import('../src/main.ts')
-     await harness.preparing.promise
-     const window = harness.windows[0]!
-@@ -922,7 +926,7 @@ describe('desktop main startup', () => {
-   })
- 
-   it.each(['win32', 'linux'] as const)('registers no backdrop swap on %s', async (platform) => {
--    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-+    poseAsPlatform(platform)
-     await import('../src/main.ts')
-     await harness.preparing.promise
-     const window = harness.windows[0]!
-@@ -998,11 +1002,16 @@ describe('desktop main startup', () => {
-   })
- 
-   it.each(['darwin', 'linux'] as const)('adds the product File menu and standard window commands only on macOS (%s)', async (platform) => {
--    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
-+    poseAsPlatform(platform)
-     await import('../src/main.ts')
-     await harness.preparing.promise
-     const describeItem = (item: MenuItemConstructorOptions): string | undefined =>
-       item.role ?? (item.type === 'separator' ? 'separator' : item.label)
-+    if (platform === 'linux') {
-+      // Linux owns no application menu: the tray carries open, restart, and quit.
-+      expect(harness.menu.setApplicationMenu).toHaveBeenLastCalledWith(null)
-+      return
-+    }
-     const template = harness.menu.buildFromTemplate.mock.calls
-       .map(call => call[0])
-       .find(items => items.some(item => item.role === 'editMenu'))
-@@ -1176,6 +1185,28 @@ describe('desktop main startup', () => {
-     expect(harness.openExternal).not.toHaveBeenCalled()
-   })
- 
-+
-+  /**
-+   * Pose as one platform for a startup import.
-+   *
-+   * Linux resolves a standalone Node and imports the separately built workbench
-+   * module when packaged; this fixture supplies neither, so the Linux leg runs
-+   * unpackaged against a temporary runtime that holds an executable Node. Window,
-+   * menu, and relay behavior does not depend on those packaging differences.
-+   */
-+  function poseAsPlatform(platform: string): void {
-+    harness.app.isPackaged = platform !== 'linux'
-+    vi.stubGlobal('process', { ...process, platform, arch: 'x64', resourcesPath: 'desktop-test-resources' })
-+    if (platform !== 'linux') return
-+    const runtime = mkdtempSync(join(tmpdir(), 'dsh-main-linux-runtime-'))
-+    onTestFinished(() => { rmSync(runtime, { recursive: true, force: true }) })
-+    mkdirSync(join(runtime, 'dependencies', 'node', 'bin'), { recursive: true })
-+    const node = join(runtime, 'dependencies', 'node', 'bin', 'node')
-+    writeFileSync(node, '')
-+    chmodSync(node, 0o755)
-+    vi.stubEnv('DSH_DESKTOP_PRIMARY_RUNTIME_DIR', runtime)
-+  }
-+
-   async function readyForUpdate() {
-     await import('../src/main.ts')
-     await harness.preparing.promise
-@@ -1192,6 +1223,7 @@ describe('desktop main startup', () => {
-     ['darwin', ['--updated'], false],
-     ['linux', ['--updated'], false],
-   ] as const)('raises the first workspace only for a Windows installer restart (%s, %j)', async (platform, args, raises) => {
-+    poseAsPlatform(platform)
-     vi.stubGlobal('process', { ...process, platform, argv: ['desktop', ...args] })
-     await import('../src/main.ts')
-     await harness.preparing.promise
-@@ -2296,7 +2328,7 @@ describe('desktop main startup', () => {
-     await harness.hostStarted.promise
-     const host = harness.hosts[0]!
-     host.fetch.mockReturnValueOnce(preferences.promise)
--    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host is unavailable')
-+    const startup = expect(Promise.resolve(invoke(DESKTOP_IPC.boot))).rejects.toThrow('Desktop Host stopped before startup completed')
-     host.ready.resolve()
-     await vi.waitFor(() => { expect(host.fetch).toHaveBeenCalledOnce() })
-     host.exited.resolve()
