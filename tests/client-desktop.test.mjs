@@ -28,7 +28,8 @@ test('real desktop adapter starts only after Host health, notifies nonmodally, a
     constructor(options) { super(); this.options = options; notifications.push(this) }
     show() {}
   }
-  const electron = { BrowserWindow: Window, Notification, ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
+  const electron = { BrowserWindow: Window, Notification, clipboard: { writeText: () => assert.fail('no startup error copy') },
+    ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     dialog: { showErrorBox: () => assert.fail('no startup modal'), showMessageBox: async () => { dialogs++; return { response: 0 } } } }
   globalThis.__clientElectron = electron
   t.after(() => { delete globalThis.__clientElectron })
@@ -38,7 +39,7 @@ test('real desktop adapter starts only after Host health, notifies nonmodally, a
     banner: { js: "import { createRequire as __req } from 'node:module'; const require = __req(import.meta.url);" },
     plugins: [{ name: 'electron-test', setup(plugin) {
       plugin.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'test' }))
-      plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: 'export const { BrowserWindow, Notification, ipcMain, dialog } = globalThis.__clientElectron;' }))
+      plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: 'export const { BrowserWindow, Notification, ipcMain, dialog, clipboard } = globalThis.__clientElectron;' }))
     } }] })
   const metadata = { version: '1.0.0', protocol: 4, dataEpoch: 'schema-1', desktopRange: '>=1 <3', kernelRange: '>=1 <3', nodeRange: '>=24 <25', nodeVersion: '24.18.1' }
   const bytes = Buffer.from('background download only')
@@ -57,7 +58,7 @@ test('real desktop adapter starts only after Host health, notifies nonmodally, a
   const app = new EventEmitter()
   Object.assign(app, { getAppPath: () => directory, getPath: () => join(directory, 'userData'), getVersion: () => metadata.version })
   t.after(() => app.emit('will-quit'))
-  const { createWorkbenchUpdates } = await import(pathToFileURL(outfile))
+  const { createWorkbenchUpdates, showMigrationFailure } = await import(pathToFileURL(outfile))
   const updater = await createWorkbenchUpdates({ app, bundled: { dsh: join(directory, 'dsh'), runtime: join(directory, 'runtime') }, wholeDesktop: { home: directory },
     trustedSender: () => true, inspectTasks: async () => { inspections++; return active },
     prepareRestart: () => assert.fail('cancel or busy must not stop Host'), restart: () => assert.fail('must not restart'), recover: () => assert.fail('must not need recovery') })
@@ -90,4 +91,22 @@ test('real desktop adapter starts only after Host health, notifies nonmodally, a
   assert.equal(dialogs, 1)
   app.emit('will-quit')
   assert.equal((await versions()).automatic.nextCheck, null)
+  let copied, responses = 0
+  electron.clipboard.writeText = value => { copied = value }
+  electron.dialog.showMessageBox = async options => {
+    assert.deepEqual(options.buttons, ['复制错误报告', '关闭'])
+    return { response: responses++ === 0 ? 0 : 1 }
+  }
+  await showMigrationFailure('升级失败：请保留备份')
+  assert.equal(copied, '升级失败：请保留备份')
+  assert.equal(responses, 2, 'copy keeps the error visible until explicitly closed')
+  responses = 0
+  electron.clipboard.writeText = () => { throw new Error('clipboard unavailable token=private-value') }
+  electron.dialog.showMessageBox = async options => {
+    assert.doesNotMatch(options.detail, /private-value/)
+    if (responses) assert.match(options.detail, /复制失败：clipboard unavailable token=\[REDACTED\]/)
+    return { response: responses++ === 0 ? 0 : 1 }
+  }
+  await showMigrationFailure('升级失败 token=private-value')
+  assert.equal(responses, 2, 'clipboard failure is displayed and leaves the report open')
 })

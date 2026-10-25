@@ -84,7 +84,9 @@ test('a real active migration startup guard exits without reading data or enteri
     const errors = []
     const boxes = []
     await runInNewContext(`(async () => { ${code} readData(); })()`, {
-      workbenchModule: { assertWholeDesktopStartupAllowed }, wholeDesktopPaths: { home }, Error,
+      workbenchModule: { assertWholeDesktopStartupAllowed,
+        showMigrationFailure: async (message, transactionPath) => { boxes.push([message, transactionPath]); if (nativeFails) throw new Error('native dialog failed') } },
+      wholeDesktopPaths: { home }, Error,
       console: { error: value => errors.push(String(value)) },
       dialog: { showErrorBox: (title, message) => { boxes.push([title, message]); if (nativeFails) throw new Error('native dialog failed') } },
       app: { getName: () => 'Fixture Desktop', exit: code => { exit = code } }, readData: () => { reads++ },
@@ -93,8 +95,8 @@ test('a real active migration startup guard exits without reading data or enteri
     assert.equal(reads, 0)
     assert.equal(exit, 1)
     assert.equal(boxes.length, 1)
-    assert.equal(boxes[0][0], 'Fixture Desktop')
-    assert.ok(boxes[0][1].includes(join(directory, 'report.json')))
+    assert.ok(boxes[0][0].includes(join(directory, 'report.json')))
+    assert.equal(boxes[0][1], join(directory, 'transaction.json'))
     assert.ok(errors.some(message => message.includes(join(directory, 'report.json'))))
   }
 })
@@ -139,5 +141,6 @@ test('Electron routes the explicit whole upgrade with main-owned paths and no or
   assert.match(adapter, /\.\.\.options.wholeDesktop/)
   assert.match(adapter, /quitWithoutRelaunch: options.quitWithoutRelaunch/)
   assert.match(adapter, /await markWholeDesktopHealthy\(/)
-  assert.match(adapter, /关闭正在使用 dsh 的命令行/)
+  assert.match(adapter, /自动关闭使用同一数据的 dsh 命令行/)
+  assert.match(adapter, /openProgress: openMigrationProgress/)
 })

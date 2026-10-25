@@ -506,7 +506,7 @@ diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
    updateDetail: '下载完成后，可安装并重启应用。',
    installAndRestart: '安装并重启',
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 2afdfd7..936d0a6 100644
+index 2afdfd7..21e4e45 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
 @@ -2,8 +2,8 @@ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-prod
@@ -546,7 +546,16 @@ index 2afdfd7..936d0a6 100644
  import { DesktopBrowserGuests } from './browser-guests.ts'
  import { installDesktopShortcuts } from './keyboard.ts'
  import { DesktopUpdateOverlays } from './update-overlay.ts'
-@@ -70,6 +71,8 @@ let shuttingDown = false
+@@ -62,6 +63,8 @@ import { DesktopQuitConfirmation } from './quit-confirmation.ts'
+ import { DesktopTray } from './tray.ts'
+ import { DesktopBackgroundNotice } from './background-notice.ts'
+ 
++const migrationProgressIndex = process.argv.indexOf('--dsh-migration-progress')
++
+ let focusPrimaryWindow = (): void => {}
+ let stopForRecovery = async (): Promise<void> => {}
+ let shuttingDown = false
+@@ -70,6 +73,8 @@ let shuttingDown = false
   * development restart command. The installer handoff has its own before-quit branch.
   */
  let skipQuitConfirmation = false
@@ -555,7 +564,16 @@ index 2afdfd7..936d0a6 100644
  let windowsLanguage: string | undefined
  /**
   * Whether the backend has reached ready: false until the first ready, back to
-@@ -97,7 +100,7 @@ const recovery = new DesktopFatalRecovery({
+@@ -82,7 +87,7 @@ const rendererConsole = new RendererConsoleTail()
+ 
+ // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
+ // set before ready so the first fatal report already resolves under it.
+-app.setAppLogsPath()
++if (migrationProgressIndex < 0) app.setAppLogsPath()
+ 
+ function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
+   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
+@@ -97,7 +102,7 @@ const recovery = new DesktopFatalRecovery({
    show: options => dialog.showMessageBox(options),
    stop: () => { shuttingDown = true; return stopForRecovery() },
    disablePlugins: async () => {
@@ -564,7 +582,7 @@ index 2afdfd7..936d0a6 100644
      const backupPath = await manager.disableAllPlugins()
      console.info('Desktop profile recovery completed:', { profilePatchBackup: backupPath ?? null, homePatch: 'unchanged' })
    },
-@@ -150,9 +153,52 @@ interface RuntimeResources {
+@@ -150,9 +155,53 @@ interface RuntimeResources {
    readonly dsh: string
  }
  
@@ -585,6 +603,7 @@ index 2afdfd7..936d0a6 100644
 +
 +/** Packaged downstream updater, emitted separately from the upstream main bundle. */
 +interface WorkbenchUpdateModule {
++  showMigrationFailure(message: string, transactionPath?: string): Promise<void>
 +  assertWholeDesktopStartupAllowed(paths: { home: string; dshHome: string; userData: string }): Promise<void>
 +  createWorkbenchUpdates(options: {
 +    app: typeof app
@@ -619,7 +638,7 @@ index 2afdfd7..936d0a6 100644
    const nodeBin = development ? join(app.getAppPath(), 'scripts', 'node-bin') : join(process.resourcesPath, 'runtime', 'bin')
    const pnpm = (development ? process.env.DSH_DESKTOP_PNPM_ENTRY : undefined)
      ?? (development ? join(app.getAppPath(), 'node_modules', 'pnpm', 'bin', 'pnpm.mjs')
-@@ -162,6 +208,62 @@ function runtimeResources(): RuntimeResources {
+@@ -162,6 +211,62 @@ function runtimeResources(): RuntimeResources {
    return { node, nodeBin, pnpm, dsh }
  }
  
@@ -682,7 +701,7 @@ index 2afdfd7..936d0a6 100644
  function developmentPrimaryRuntime(): string {
    const directory = process.env.DSH_DESKTOP_PRIMARY_RUNTIME_DIR
    if (directory === undefined || directory === '') {
-@@ -315,16 +417,60 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+@@ -315,16 +420,61 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
  }
  
  async function main(): Promise<void> {
@@ -695,7 +714,8 @@ index 2afdfd7..936d0a6 100644
 +    catch (error) {
 +      const message = error instanceof Error ? error.message : String(error)
 +      console.error(message)
-+      try { dialog.showErrorBox(app.getName(), message) }
++      try { await workbenchModule.showMigrationFailure(message, error instanceof Error && 'transactionPath' in error
++        && typeof error.transactionPath === 'string' ? error.transactionPath : undefined) }
 +      catch (dialogError) { console.error(dialogError) }
 +      app.exit(1)
 +      return
@@ -748,7 +768,7 @@ index 2afdfd7..936d0a6 100644
    const activeProject = paths.profile
    const manager = new DesktopProjectManager(paths, resources)
    // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
-@@ -445,12 +591,19 @@ async function main(): Promise<void> {
+@@ -445,12 +595,19 @@ async function main(): Promise<void> {
    const backend = new DesktopBackendController((onFailure) => {
      const hostInspectPort = developmentHostInspectPort(development)
      const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -769,7 +789,7 @@ index 2afdfd7..936d0a6 100644
          hostCookie = await authenticateWebHost(ready.url)
          hostUrl = ready.url
          if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
-@@ -511,8 +664,9 @@ async function main(): Promise<void> {
+@@ -511,8 +668,9 @@ async function main(): Promise<void> {
        inspectQuit: () => host.inspectQuit(),
      }
    }, (state) => {
@@ -781,7 +801,7 @@ index 2afdfd7..936d0a6 100644
    })
  
    const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
-@@ -567,76 +721,121 @@ async function main(): Promise<void> {
+@@ -567,76 +725,121 @@ async function main(): Promise<void> {
    }
    stopForRecovery = () => backend.close()
  
@@ -959,7 +979,7 @@ index 2afdfd7..936d0a6 100644
      undefined, undefined, undefined,
      (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
      updateChannel,
-@@ -932,7 +1131,7 @@ async function main(): Promise<void> {
+@@ -932,7 +1135,7 @@ async function main(): Promise<void> {
    const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
      : join(process.resourcesPath, 'icon.png')
    app.setAboutPanelOptions({
@@ -968,7 +988,7 @@ index 2afdfd7..936d0a6 100644
      applicationVersion: app.getVersion(),
      // The release has no separate build number; omit Electron's bundle version.
      version: '',
-@@ -959,7 +1158,10 @@ async function main(): Promise<void> {
+@@ -959,7 +1162,10 @@ async function main(): Promise<void> {
          click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
        : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
      { type: 'separator' },
@@ -980,7 +1000,7 @@ index 2afdfd7..936d0a6 100644
      ...process.platform === 'darwin' || process.platform === 'win32'
        ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
      ...development ? [
-@@ -981,19 +1183,22 @@ async function main(): Promise<void> {
+@@ -981,19 +1187,22 @@ async function main(): Promise<void> {
      { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
    ]
    const refreshApplicationMenu = (): void => {
@@ -1007,7 +1027,7 @@ index 2afdfd7..936d0a6 100644
      } catch (error) { console.warn('desktop tray: unavailable', error) }
    }
    const backgroundNotice = process.platform === 'win32'
-@@ -1232,7 +1437,9 @@ async function main(): Promise<void> {
+@@ -1232,7 +1441,9 @@ async function main(): Promise<void> {
      window.focus()
    }
  
@@ -1018,7 +1038,7 @@ index 2afdfd7..936d0a6 100644
    app.on('open-url', (event, url) => {
      event.preventDefault()
      if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-@@ -1247,6 +1454,7 @@ async function main(): Promise<void> {
+@@ -1247,6 +1458,7 @@ async function main(): Promise<void> {
    if (process.platform !== 'win32') powerMonitor.on('shutdown', () => { sessionEnding = true })
    const finishQuit = (): void => {
      quitting = true
@@ -1026,7 +1046,7 @@ index 2afdfd7..936d0a6 100644
      shuttingDown = true
      updateJournal?.action('quit-requested')
      quitConfirmation.dispose()
-@@ -1282,6 +1490,7 @@ async function main(): Promise<void> {
+@@ -1282,6 +1494,7 @@ async function main(): Promise<void> {
      void quitConfirmation.confirm().then((approved) => {
        if (quitting || shellInstallerOwnsQuit) return
        if (approved) { finishQuit(); return }
@@ -1034,6 +1054,30 @@ index 2afdfd7..936d0a6 100644
        // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
        if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
      }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
+@@ -1340,6 +1553,17 @@ async function main(): Promise<void> {
+   publishUpdate(updateState)
+ }
+ 
++if (migrationProgressIndex >= 0) {
++  void import(new URL('./workbench-migration-progress.mjs', import.meta.url).href)
++    .then(module => module.runMigrationProgress(process.argv[migrationProgressIndex + 1]))
++    .catch(async (error: unknown) => {
++      console.error(error)
++      await app.whenReady()
++      const workbenchModule = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
++      await workbenchModule.showMigrationFailure(error instanceof Error ? error.message : String(error))
++      app.exit(1)
++    }).catch((error: unknown) => { console.error(error); app.exit(1) })
++} else {
+ const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+ 
+ if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unknown) => {
+@@ -1354,3 +1578,5 @@ if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unk
+   console.error(error)
+   app.exit(1)
+ })
++
++}
 diff --git a/apps/desktop/src/node-environment.ts b/apps/desktop/src/node-environment.ts
 --- a/apps/desktop/src/node-environment.ts
 +++ b/apps/desktop/src/node-environment.ts

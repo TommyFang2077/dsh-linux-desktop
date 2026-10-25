@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <title>升级进度</title>
+  <link rel="stylesheet" href="updates.css">
+  <link rel="stylesheet" href="migration-progress.css">
+</head>
+<body>
+  <main>
+    <h1 id="title">正在升级</h1>
+    <p id="status" role="status" aria-live="polite">正在读取升级状态…</p>
+    <progress id="progress" aria-label="升级进度"></progress>
+    <section>
+      <ol id="stages" aria-label="升级步骤"></ol>
+      <p id="processes"></p>
+    </section>
+    <p id="error" role="alert"></p>
+    <p id="recovery"></p>
+    <p id="fallback-error" role="alert"></p>
+    <p id="report-path"></p>
+    <div class="actions">
+      <button id="copy" type="button">复制错误报告</button>
+      <button id="open" type="button">打开报告</button>
+      <button id="close" type="button">关闭</button>
+    </div>
+    <p id="feedback" role="status" aria-live="polite"></p>
+  </main>
+  <script src="migration-progress.js"></script>
+</body>
+</html>

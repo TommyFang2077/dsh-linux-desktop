@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, dialog, Notification } from 'electron'
+import { BrowserWindow, ipcMain, dialog, Notification, clipboard } from 'electron'
 import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,8 +9,29 @@ import { AutomaticUpdates, confirmUpdate } from './automatic.mjs'
 import { ensureMarket } from './market.mjs'
 import { detectUserDesktop, installUserDesktop } from './user-install.mjs'
 import { markWholeDesktopHealthy } from './whole-desktop.mjs'
+import { openMigrationProgress } from './migration-progress-launch.mjs'
+import { migrationProgressContext, migrationReportText, publicMigrationReport, readMigrationReport } from './migration-report.mjs'
 
 export { assertWholeDesktopStartupAllowed } from './whole-desktop.mjs'
+
+export async function showMigrationFailure(message, transactionPath) {
+  const safeMessage = publicMigrationReport({ error: message }).error
+  let details = safeMessage
+  if (transactionPath) {
+    try {
+      const context = migrationProgressContext(transactionPath)
+      details = migrationReportText(readMigrationReport(context), context.reportPath)
+    } catch (error) { details += `\n\n无法读取升级报告：${publicMigrationReport({ error: error.message }).error}\n报告：${transactionPath}` }
+  }
+  let feedback = ''
+  while (true) {
+    const answer = await dialog.showMessageBox({ type: 'error', title: '软件更新未完成', message: safeMessage,
+      detail: `${details}${feedback ? `\n\n${feedback}` : ''}`, buttons: ['复制错误报告', '关闭'], defaultId: 0, cancelId: 1, noLink: true })
+    if (answer.response !== 0) return
+    try { clipboard.writeText(details); feedback = '报告已复制。' }
+    catch (error) { feedback = `复制失败：${publicMigrationReport({ error: error.message }).error}` }
+  }
+}
 
 const execute = promisify(execFile)
 
@@ -42,10 +63,12 @@ export async function createWorkbenchUpdates(options) {
   })
   await manager.boot()
   const upgradeFailure = process.env.DSH_WHOLE_DESKTOP_FAILED
+  const upgradeReport = process.env.DSH_WHOLE_DESKTOP_REPORT
   delete process.env.DSH_WHOLE_DESKTOP_FAILED
+  delete process.env.DSH_WHOLE_DESKTOP_REPORT
   if (upgradeFailure) {
-    manager.notice = `完整桌面升级未完成，已恢复原版本：${upgradeFailure}`
-    dialog.showErrorBox('软件更新', `${manager.notice}\n\n请关闭占用 dsh 数据的其他程序后重试。`)
+    manager.notice = `升级未完成，正在重新打开原版本：${upgradeFailure}`
+    await showMigrationFailure(manager.notice, upgradeReport)
   }
   const provisioning = new AbortController()
   app.on('before-quit', () => provisioning.abort())
@@ -132,7 +155,7 @@ export async function createWorkbenchUpdates(options) {
         const answer = await dialog.showMessageBox(window, {
           type: 'question', title: '确认更新', message: `更新${channel === 'kernel' ? '内核' : ''}至 ${version}${channel !== 'kernel' ? ` · Linux r${status()[channel].availableLinuxRevision}` : ''}？`,
           detail: channel === 'desktopUpgrade' || (channel === 'kernel' && metadata.followOfficial === true)
-          ? `${channel === 'kernel' ? '仅更新内核，保留当前桌面壳。' : ''}请先关闭正在使用 dsh 的命令行。仅在无活动任务时退出，自动备份数据到 ~/Backups/dsh-workbench 后安装新版本并重新打开；新内核启动失败时保留备份，须恢复旧数据后回退。`
+          ? `${channel === 'kernel' ? '仅更新内核，保留当前桌面壳。' : ''}仅在无活动任务时退出，自动关闭使用同一数据的 dsh 命令行和相关辅助进程，超时后会终止已确认的残留进程。进度窗口会持续显示状态；自动备份到 ~/Backups/dsh-workbench 后安装并重新打开，失败时显示可复制的报告并保留备份。`
           : '更新已下载并校验。安装后应用将重启；有活动任务或无法确认任务状态时将暂缓，不会强制停止任务。',
           buttons: ['取消', '继续'], defaultId: 0, cancelId: 0,
         })
@@ -143,7 +166,8 @@ export async function createWorkbenchUpdates(options) {
         const install = channel === 'kernel' ? manager.installKernelMigration.bind(manager) : manager.installWholeDesktopUpgrade.bind(manager)
         await install({
           ...options.wholeDesktop, root: userDesktop?.root ?? join(options.wholeDesktop.home, 'Applications/dsh-linux-desktop'),
-        }, { prepareRestart: options.prepareRestart, recover: options.recover,
+          activeRuntime: manager.selected.runtime, activeDsh: manager.selected.dsh,
+        }, { prepareRestart: options.prepareRestart, recover: options.recover, openProgress: openMigrationProgress,
           quitWithoutRelaunch: options.quitWithoutRelaunch })
         return { status: status() }
       }

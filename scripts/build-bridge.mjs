@@ -83,7 +83,7 @@ export async function stageBridge({ root = resolve(import.meta.dirname, '..'), d
   await fs.writeFile(historicalPatch, composite)
   git(upstream, 'apply', '--reverse', '--check', historicalPatch)
   for (const path of ['updates', 'patches/bridge-migration.patch', 'electron-builder.config.mjs', 'scripts/build-updates.mjs', 'scripts/release-updates.mjs', 'scripts/build-bridge.mjs',
-    'scripts/kernel-update-smoke.mjs', 'scripts/follow-kernel-smoke.mjs',
+    'scripts/kernel-update-smoke.mjs', 'scripts/follow-kernel-smoke.mjs', 'scripts/migration-progress-smoke.mjs',
     '.github/workflows/linux-updates.yml', 'tests/workflow.test.mjs', 'tests/manifest.test.mjs', 'tests/bridge-update.test.mjs', 'tests/fixtures/legacy-r7-core.mjs']) {
     await fs.mkdir(dirname(join(directory, path)), { recursive: true })
     await fs.cp(join(root, path), join(directory, path), { recursive: true })
@@ -93,6 +93,9 @@ export async function stageBridge({ root = resolve(import.meta.dirname, '..'), d
   }
   const sources = {}
   for (const path of ['updates/core.mjs', 'updates/desktop.mjs', 'updates/user-install.mjs', 'updates/whole-desktop.mjs', 'updates/migration-worker.mjs',
+    'updates/migration-processes.mjs', 'updates/migration-progress-launch.mjs', 'updates/migration-progress.mjs',
+    'updates/migration-report.mjs', 'updates/migration-progress.html', 'updates/migration-progress.js',
+    'updates/migration-progress.css', 'updates/migration-progress-preload.cjs',
     'scripts/build-updates.mjs', 'electron-builder.config.mjs', 'patches/linux.patch', 'patches/bridge-migration.patch',
     'build/upstream/apps/desktop/src/main.ts']) {
     sources[path] = createHash('sha256').update(await fs.readFile(join(directory, path))).digest('hex')

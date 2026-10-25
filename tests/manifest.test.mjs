@@ -6,6 +6,7 @@ import config from '../electron-builder.config.mjs'
 
 test('desktop packaging ships and verifies the standalone whole-desktop migration worker', async t => {
   assert.ok(config.files.includes('lib/workbench-migration-worker.mjs'))
+  assert.ok(config.files.includes('lib/workbench-migration-progress.mjs'))
   const appOutDir = await fs.mkdtemp('/tmp/workbench-worker-package-test-')
   t.after(() => fs.rm(appOutDir, { recursive: true, force: true }))
   const app = join(appOutDir, 'resources/app')
@@ -18,6 +19,11 @@ test('desktop packaging ships and verifies the standalone whole-desktop migratio
   await fs.writeFile(worker, '')
   await assert.rejects(config.afterPack(context), /migration worker/)
   await fs.writeFile(worker, 'export const fixture = true\n')
+  await assert.rejects(config.afterPack(context), /workbench-migration-progress/)
+  for (const file of ['lib/workbench-migration-progress.mjs', 'workbench/migration-progress.html',
+    'workbench/migration-progress.js', 'workbench/migration-progress.css', 'workbench/migration-progress-preload.cjs']) {
+    await fs.writeFile(join(app, file), 'progress fixture')
+  }
   const python = join(appOutDir, 'resources/runtime/primary-runtime/dependencies/python/bin')
   await fs.mkdir(python, { recursive: true })
   await fs.writeFile(join(python, 'python3.12'), 'interpreter fixture', { mode: 0o755 })

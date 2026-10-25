@@ -115,7 +115,7 @@ async function fixture(t, { acknowledge = true, rootMismatch, kernelMigration = 
   const next = await archive('1.2.0', 'new-epoch')
   const request = { archive: next.path, envelope: next.envelope, publicKey: publicKey.export({ type: 'spki', format: 'pem' }),
     home, root, dshHome, userData, xdgDataHome: join(home, '.local/share'), oldExecutable: installed.executable,
-    node: process.execPath, workerPath: new URL('../build/migration-worker.mjs', import.meta.url).pathname }
+    node: process.execPath, python: '/usr/bin/python3', workerPath: new URL('../build/migration-worker.mjs', import.meta.url).pathname }
   async function kernelArchive(version, dataEpoch) {
     const payloadRoot = join(base, `kernel-${version}`)
     await fs.mkdir(payloadRoot)
@@ -163,11 +163,17 @@ async function handoff(f, options = {}) {
   const requestFile = join(f.base, 'request.json')
   await fs.writeFile(requestFile, JSON.stringify(f.request), { mode: 0o600 })
   const program = `import fs from 'node:fs/promises';
+    import { spawn } from 'node:child_process';
     import { startWholeDesktopUpgrade } from ${JSON.stringify(new URL('../build/whole-desktop.mjs', import.meta.url).href)};
     const request = JSON.parse(await fs.readFile(process.argv[1], 'utf8'));
+    ${options.helper ? `const helperPath = process.env.DSH_HOME + '/plugin-helper.mjs';
+      await fs.writeFile(helperPath, "import fs from 'node:fs/promises'; const handle = await fs.open(process.env.DSH_HOME + '/session.json', 'r+'); process.send('ready'); setInterval(() => void handle.fd, 1000)");
+      const helper = spawn(request.activeRuntime ? request.activeRuntime + '/node' : process.execPath, [helperPath],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      await new Promise(resolve => helper.once('message', resolve));` : ''}
     try {
       const result = await startWholeDesktopUpgrade(request, {
-        prepareRestart: async () => true, recover: async () => {},
+        prepareRestart: async () => { ${options.makeFallbackFail ? "await fs.chmod(request.oldExecutable, 0o600);" : ''} return true }, recover: async () => {},
         quitWithoutRelaunch: () => setTimeout(() => process.exit(0), ${options.exitDelay ?? 50})
       });
       process.send(result);
@@ -344,7 +350,7 @@ test('the production worker backs up complete data after actual parent exit befo
   assert.equal(await fs.readFile(join(directory, 'backup/userData/settings.json'), 'utf8'), '{"theme":"dark"}')
   assert.equal((await fs.stat(join(directory, 'backup/dshHome/session.json'))).mode & 0o777, 0o600)
   assert.ok(status.installBytes >= 32 * 1024, 'space preflight includes actual uncompressed candidate bytes')
-  assert.deepEqual(status.events.map(event => event.phase), ['prepared', 'ready', 'waiting-parent', 'backup', 'backup-verified', 'installing', 'spawned', 'healthy'])
+  assert.deepEqual(status.events.map(event => event.phase), ['prepared', 'ready', 'waiting-parent', 'backup', 'verifying-backup', 'backup-verified', 'installing', 'spawned', 'healthy'])
 })
 
 test('a real cross-epoch kernel transaction keeps the shell and binds health to the selected kernel', async t => {
@@ -649,6 +655,85 @@ test('a background helper finishing after its main process exits settles before 
   await exited
   assert.equal(status.phase, 'healthy', status.error)
   assert.equal(await fs.readFile(join(dirname(result.reportPath), 'backup/userData/settings.json'), 'utf8'), '{"theme":"light"}')
+})
+
+for (const separateRuntime of [false, true]) test(`the real migration stops a captured orphan helper (${separateRuntime ? 'active kernel runtime' : 'bundled runtime'}) before backup`, async t => {
+  const f = await fixture(t)
+  if (separateRuntime) {
+    f.request.activeRuntime = join(f.base, 'active-runtime')
+    await fs.mkdir(f.request.activeRuntime)
+    await fs.copyFile(process.execPath, join(f.request.activeRuntime, 'node'))
+  }
+  const { result } = await handoff(f, { helper: true })
+  const status = await completed(result.reportPath)
+  assert.equal(status.phase, 'healthy', status.error)
+  assert.ok(status.processActions.some(action => action.action === 'SIGTERM' && action.result === 'exited'))
+  assert.equal(await fs.readFile(join(dirname(result.reportPath), 'backup/dshHome/session.json'), 'utf8'), '{"epoch":"old","text":"saved"}')
+  assert.ok(status.events.findIndex(event => event.phase === 'stopping-processes') < status.events.findIndex(event => event.phase === 'backup-verified'))
+})
+
+test('process shutdown failure and old desktop restart failure remain explicit in the report', async t => {
+  const f = await fixture(t)
+  f.request.python = '/missing-bundled-python'
+  const { result } = await handoff(f, { helper: true, makeFallbackFail: true })
+  const deadline = Date.now() + 10_000
+  let status
+  do {
+    status = JSON.parse(await fs.readFile(result.reportPath, 'utf8'))
+    if (status.fallbackError) break
+    await new Promise(resolve => setTimeout(resolve, 20))
+  } while (Date.now() < deadline)
+  const transaction = JSON.parse(await fs.readFile(join(dirname(result.reportPath), 'transaction.json'), 'utf8'))
+  const { stopProcesses } = await import('../updates/migration-processes.mjs')
+  await stopProcesses('/usr/bin/python3', transaction.shutdownProcesses)
+  assert.equal(status.phase, 'failed')
+  assert.match(status.error, /ENOENT|missing-bundled-python/)
+  assert.match(status.fallbackError, /无法重新打开原版本.*EACCES/)
+  assert.equal(status.activated, false)
+  await assert.rejects(fs.lstat(join(dirname(result.reportPath), 'backup')), { code: 'ENOENT' })
+})
+
+test('a missing progress window stops the upgrade before shutting down the Host', async t => {
+  const f = await fixture(t)
+  let stopped = false
+  await assert.rejects(startWholeDesktopUpgrade(f.request, {
+    openProgress: async () => { throw new Error('progress window failed') },
+    prepareRestart: async () => { stopped = true; return true }, recover: async () => {},
+  }), /progress window failed/)
+  assert.equal(stopped, false)
+  const directory = (await fs.readdir(join(f.home, 'Backups/dsh-workbench'))).find(name => name !== '.migration-lock')
+  const status = JSON.parse(await fs.readFile(join(f.home, 'Backups/dsh-workbench', directory, 'report.json'), 'utf8'))
+  assert.equal(status.phase, 'failed')
+  assert.match(status.error, /progress window failed/)
+})
+
+test('a known CLI appearing during backup is stopped and the snapshot is rebuilt from current data', async t => {
+  const f = await fixture(t)
+  const files = join(f.dshHome, 'many-files')
+  await fs.mkdir(files)
+  for (let index = 0; index < 500; index++) await fs.writeFile(join(files, String(index)), 'saved data')
+  const packageRoot = join(f.base, 'cli-package')
+  await fs.mkdir(join(packageRoot, 'lib'), { recursive: true })
+  await fs.writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', type: 'module' }))
+  const entry = join(packageRoot, 'lib/bin.js')
+  await fs.writeFile(entry, `import fs from 'node:fs/promises';
+    await fs.writeFile(process.env.DSH_HOME + '/session.json', '{"epoch":"old","text":"late saved data"}');
+    const handle = await fs.open(process.env.DSH_HOME + '/session.json', 'r+');
+    setInterval(() => void handle.fd, 1000);`)
+  const { result } = await handoff(f, { exitDelay: 500 })
+  const actor = spawn(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs/promises'; import {spawn} from 'node:child_process';
+    while (!await fs.stat(${JSON.stringify(join(dirname(result.reportPath), 'backup.staging'))}).then(() => true, () => false))
+      await new Promise(resolve => setTimeout(resolve, 1));
+    const cli = spawn(process.execPath, [${JSON.stringify(entry)}], { env: {...process.env, DSH_HOME: ${JSON.stringify(f.dshHome)}}, stdio: 'ignore' });
+    await new Promise(resolve => cli.once('exit', resolve));`], { stdio: 'ignore' })
+  const exited = new Promise(resolve => actor.once('exit', resolve))
+  t.after(async () => { if (actor.exitCode === null) actor.kill(); await exited })
+  const status = await completed(result.reportPath)
+  assert.equal(status.phase, 'healthy', status.error)
+  assert.ok(status.backupRetry >= 1, 'a writer discovered after snapshot creation must cause a fresh snapshot')
+  assert.equal(await fs.readFile(join(dirname(result.reportPath), 'backup/dshHome/session.json'), 'utf8'), '{"epoch":"old","text":"late saved data"}')
+  await exited
 })
 
 test('a persistent writer in desktop data still blocks migration before any backup or activation', async t => {

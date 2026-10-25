@@ -125,6 +125,8 @@ jobs:
             --deb "dist/dsh-workbench-$version-r$revision-linux-x64.deb" \
             --rpm "dist/dsh-workbench-$version-r$revision-linux-x64.rpm" \
             --metadata desktop.json --output dist/desktop-release --key "$key" --base-url "$base"
+      - name: Verify visible migration errors and one-click report copy
+        run: xvfb-run -a node scripts/migration-progress-smoke.mjs
       - name: Verify the previous shell with the real official candidate kernel
         env:
           GH_TOKEN: ${{ github.token }}

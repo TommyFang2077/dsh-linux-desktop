@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { atomicJson, checkKernelInterface, extractDesktop, extractKernel, fileHash, verifyFeed, verifyKernelTree, verifyKernelRuntime } from './core.mjs'
 import { detectUserDesktop, installUserDesktop, verifyUserDesktop } from './user-install.mjs'
+import { assertNoWriters, processIdentity, originalAlive, captureMigrationProcesses, stopMigrationProcesses } from './migration-processes.mjs'
 import { readDesktopRuntime, verifyDesktopRuntime } from '../build/upstream/apps/desktop/src/runtime-tree.ts'
 
 const fail = message => { throw new Error(message) }
@@ -61,6 +62,7 @@ async function verifiedArchive(request, destination, kernelExtractor = extractKe
 }
 
 async function report(transaction, phase, details = {}) {
+  if (phase === 'failed') details = { failedPhase: transaction.report?.failedPhase ?? transaction.report?.phase, ...details }
   transaction.report = { ...transaction.report, ...details, schemaVersion: 1, transactionId: transaction.transactionId,
     phase, updatedAt: new Date().toISOString(),
     events: transaction.report?.phase === phase ? transaction.report.events
@@ -70,9 +72,16 @@ async function report(transaction, phase, details = {}) {
 
 async function releaseGate(transaction) {
   const path = join(backupRoot(transaction.home), '.migration-lock')
-  if (JSON.parse(await fs.readFile(join(path, 'owner.json'), 'utf8')).transactionId === transaction.transactionId) {
-    await fs.rm(path, { recursive: true })
-  }
+  let owner
+  try { owner = JSON.parse(await fs.readFile(join(path, 'owner.json'), 'utf8')) }
+  catch (error) { if (error.code === 'ENOENT') return; throw error }
+  if (owner.transactionId !== transaction.transactionId) fail('Migration admission gate ownership changed; refusing to remove it')
+  await fs.rm(path, { recursive: true })
+}
+
+async function recordFailure(transaction, details) {
+  try { await report(transaction, 'failed', details) }
+  catch (error) { console.error(`Cannot write migration failure report: ${error.message}`) }
 }
 
 /** Called before opening data or starting a Host, including the worker's explicit new launch. */
@@ -102,7 +111,9 @@ export async function assertWholeDesktopStartupAllowed({ home, dshHome, userData
       return
     }
   }
-  fail(`Desktop migration blocks startup; review ${join(owner.directory, 'report.json')}`)
+  const error = new Error(`Desktop migration blocks startup; review ${join(owner.directory, 'report.json')}`)
+  error.transactionPath = join(owner.directory, 'transaction.json')
+  throw error
 }
 
 /** Only the target Desktop's existing real Host-health callback may release the admission gate. */
@@ -174,8 +185,11 @@ export async function startWholeDesktopUpgrade(request, lifecycle) {
     await fs.copyFile(request.archive, transaction.archive, constants.COPYFILE_EXCL)
     await fs.chmod(transaction.archive, 0o600)
     if (await fileHash(transaction.archive) !== transaction.release.asset.sha256) fail('Transferred archive changed')
-    await report(transaction, 'prepared')
+    transaction.parent = await processIdentity(process.pid)
+    await report(transaction, 'prepared', { parent: transaction.parent })
     await atomicJson(join(transaction.directory, 'transaction.json'), transaction)
+    transaction.shutdownProcesses = await captureMigrationProcesses(request)
+    transaction.progressIdentity = await lifecycle.openProgress?.(join(transaction.directory, 'transaction.json'))
     prepared = true
     if (!await lifecycle.prepareRestart()) {
       prepared = false
@@ -199,9 +213,15 @@ export async function startWholeDesktopUpgrade(request, lifecycle) {
     lifecycle.quitWithoutRelaunch()
     return { kind: 'handed-off', transactionId: transaction.transactionId, reportPath: join(transaction.directory, 'report.json') }
   } catch (error) {
-    if (transaction.directory) await report(transaction, 'failed', { error: error.message }).catch(() => {})
-    await releaseGate(transaction).catch(() => {})
-    if (prepared) await lifecycle.recover()
+    await recordFailure(transaction, { error: error.message })
+    try { await releaseGate(transaction) }
+    catch (cleanupError) { await recordFailure(transaction, { fallbackError: `无法释放升级锁：${cleanupError.message}` }) }
+    if (prepared) {
+      try { await lifecycle.recover() }
+      catch (recoveryError) {
+        await recordFailure(transaction, { fallbackError: recoveryError.message })
+      }
+    }
     throw error
   } finally { await fs.rm(candidate, { recursive: true, force: true }) }
 }
@@ -231,18 +251,6 @@ export async function validateKernelMigration({ home, dshHome, userData, kernelR
   return transaction.report
 }
 
-async function processIdentity(pid) {
-  const contents = await fs.readFile(`/proc/${pid}/stat`, 'utf8')
-  const fields = contents.slice(contents.lastIndexOf(')') + 2).trim().split(/\s+/)
-  return { pid, state: fields[0], startTime: fields[19], bootId: (await fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }
-}
-
-async function originalAlive(identity) {
-  try {
-    const actual = await processIdentity(identity.pid)
-    return actual.state !== 'Z' && actual.startTime === identity.startTime && actual.bootId === identity.bootId
-  } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return false; throw error }
-}
 
 async function handoffWorker(transaction) {
   const log = await fs.open(join(transaction.directory, 'worker.log'), 'a', 0o600)
@@ -278,61 +286,6 @@ async function readTransaction(path) {
   return transaction
 }
 
-async function assertNoWriters(roots, inodes = new Set()) {
-  for (const name of await fs.readdir('/proc')) {
-    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue
-    const processPath = `/proc/${name}`
-    let dsh = false
-    try {
-      if ((await fs.stat(processPath)).uid !== process.getuid()) continue
-      if ((await processIdentity(Number(name))).state === 'Z') continue
-      const command = (await fs.readFile(join(processPath, 'cmdline'), 'utf8')).split('\0').filter(Boolean)
-      dsh = command.some(value => /(^|\/)(dsh|dsh-desktop-host|dsh\.mjs)(\/|$)/.test(value))
-      if (dsh) {
-        // Classify a known CLI by its effective DSH_HOME; unrelated isolated roots do not share data.
-        const environment = (await fs.readFile(join(processPath, 'environ'), 'utf8')).split('\0')
-        const value = key => environment.find(entry => entry.startsWith(`${key}=`))?.slice(key.length + 1)
-        const configured = value('DSH_HOME') || (value('HOME') && join(value('HOME'), '.dsh'))
-        if (!configured) fail(`Shared DSH process has an unknown data root: PID ${name}`)
-        let actual = resolve(configured)
-        try { actual = await fs.realpath(actual) } catch (error) { if (error.code !== 'ENOENT') throw error }
-        if (roots.some(root => within(root, actual) || within(actual, root))) fail(`Shared DSH process must be closed before migration: PID ${name}`)
-      }
-      for (const descriptor of await fs.readdir(join(processPath, 'fd'))) {
-        try {
-          const target = (await fs.readlink(join(processPath, 'fd', descriptor))).replace(/ \(deleted\)$/, '')
-          const info = await fs.stat(join(processPath, 'fd', descriptor), { bigint: true })
-          if (!roots.some(root => within(root, target)) && !inodes.has(`${info.dev}:${info.ino}`)) continue
-          const fdinfo = await fs.readFile(join(processPath, 'fdinfo', descriptor), 'utf8')
-          const flags = /^flags:\s+([0-7]+)/m.exec(fdinfo)
-          if (!flags || (parseInt(flags[1], 8) & 3)) fail(`Data writer must be closed before migration: PID ${name}`)
-        } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error }
-      }
-      const mappings = await fs.readFile(join(processPath, 'maps'), 'utf8')
-      for (const line of mappings.split('\n')) {
-        if (!line) continue
-        const mapping = /^[\da-fA-F]+-[\da-fA-F]+\s+([r-][w-][x-][ps])\s+[\da-fA-F]+\s+([\da-fA-F]{1,8}):([\da-fA-F]{1,8})\s+(\d{1,20})(?:\s+([^\n]*))?$/.exec(line)
-        if (!mapping) fail(`Malformed process memory mapping: PID ${name}`)
-        if (mapping[1][1] !== 'w' || mapping[1][3] !== 's') continue
-        const major = BigInt(`0x${mapping[2]}`), minor = BigInt(`0x${mapping[3]}`)
-        // Linux dev_t packs the high major/minor bits separately; maps prints hexadecimal components.
-        const device = ((major & 0xfffn) << 8n) | (minor & 0xffn)
-          | ((major & ~0xfffn) << 32n) | ((minor & ~0xffn) << 12n)
-        const inode = BigInt(mapping[4])
-        if (inode > 0xffffffffffffffffn) fail(`Malformed process memory mapping: PID ${name}`)
-        const target = mapping[5]?.replace(/ \(deleted\)$/, '')
-        if ((target && roots.some(root => within(root, target))) || inodes.has(`${device}:${inode}`)) {
-          fail(`Shared writable data mapping must be closed before migration: PID ${name}`)
-        }
-      }
-    } catch (error) {
-      if (['ENOENT', 'ESRCH'].includes(error.code)) continue
-      // Non-dumpable session processes such as systemd --user and (sd-pam) hide their fds from their own UID.
-      if (error.code === 'EACCES' && !dsh) continue
-      fail(`Shared writer inspection failed or writer is active: ${error.message}`)
-    }
-  }
-}
 
 async function snapshot(path) {
   const entries = []
@@ -468,7 +421,10 @@ export async function runWholeDesktopMigration(path) {
     const deadline = Date.now() + 30_000
     while (await originalAlive(transaction.parent)) {
       if (Date.now() >= deadline) fail('Original Electron did not actually exit before the backup deadline')
-      await new Promise(resolve => setTimeout(resolve, 50))
+      const additional = await captureMigrationProcesses(transaction, [transaction.parent, ...(transaction.shutdownProcesses ?? [])])
+      transaction.shutdownProcesses = [...(transaction.shutdownProcesses ?? []),
+        ...additional.filter(item => !(transaction.shutdownProcesses ?? []).some(known => known.pid === item.pid && known.startTime === item.startTime))]
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
     parentExited = true
     const roots = [transaction.dshHome, transaction.userData, dirname(transaction.oldExecutable)]
@@ -479,39 +435,31 @@ export async function runWholeDesktopMigration(path) {
       roots.push(join(transaction.root, 'versions', state.previous))
       names.push('previousDesktop')
     }
+    const stopKnown = () => stopMigrationProcesses(transaction, processActions => report(transaction, 'stopping-processes', {
+      processActions: [...(transaction.report.processActions ?? []), ...processActions].slice(-100) }))
+    await stopKnown()
     await report(transaction, 'backup', { originalExitObservedAt: new Date().toISOString() })
-    // Plugin helpers may finish their shutdown after both Host and Electron exit.
+    // Unknown writers may finish on their own; they are never authorized for forced termination.
     const writerDeadline = Date.now() + 30_000
     while (true) {
       try { await assertNoWriters(roots); break }
       catch (error) {
         if (Date.now() >= writerDeadline) throw error
+        await stopKnown()
         await new Promise(resolve => setTimeout(resolve, 100))
       }
     }
-    const manifest = { schemaVersion: 1, transactionId: transaction.transactionId, originalHome: transaction.home,
-      installation, roots: [] }
-    for (let i = 0; i < roots.length; i++) manifest.roots.push({ name: names[i], source: roots[i], entries: await snapshot(roots[i]) })
-    assertRestorableDataLinks(manifest.roots, transaction.home)
-    for (const entry of manifest.installation) if (entry.type === 'link') relocatedInstallationLink(entry, manifest.roots, transaction.home, transaction.home)
-    const inodes = new Set(manifest.roots.flatMap(root => (root.entries ?? []).map(entry => entry.inode)))
-    await assertNoWriters(roots, inodes)
-    const bytes = manifest.roots.reduce((total, root) => total + (root.entries ?? []).filter(entry => entry.type === 'file').reduce((size, entry) => size + entry.size, 0), 0)
-    const disk = await fs.statfs(transaction.directory, { bigint: true })
-    const requiredFreeBytes = BigInt(bytes) + BigInt(transaction.installBytes) * 2n + BigInt(transaction.release.asset.size) + 64n * 1024n ** 2n
-    if (disk.bavail * disk.bsize < requiredFreeBytes) fail('Insufficient free space for a complete verified backup and installation')
-    const staging = join(transaction.directory, 'backup.staging')
-    await privateDirectory(staging)
-    for (const root of manifest.roots) await copySnapshot(root.source, join(staging, root.name), root.entries)
-    await verifySnapshot(staging, manifest)
-    await assertNoWriters(roots, inodes)
-    for (const root of manifest.roots) {
-      if (JSON.stringify(await snapshot(root.source)) !== JSON.stringify(root.entries)) fail('Source data changed during backup; desktop cutover stopped')
+    let manifest, inodes
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        ;({ manifest, inodes } = await createMigrationBackup(transaction, roots, names, installation))
+        break
+      } catch (error) {
+        if (attempt === 2 || !(await stopKnown()).length) throw error
+        await fs.rm(join(transaction.directory, 'backup.staging'), { recursive: true, force: true })
+        await report(transaction, 'backup', { backupRetry: attempt + 1 })
+      }
     }
-    await atomicJson(join(staging, 'manifest.json'), manifest)
-    await fs.rename(staging, join(transaction.directory, 'backup'))
-    await report(transaction, 'backup-verified', { backupVerifiedAt: new Date().toISOString(), backupBytes: bytes,
-      installBytes: transaction.installBytes, requiredFreeBytes: String(requiredFreeBytes) })
     await report(transaction, 'installing')
     const release = verifyFeed(transaction.envelope, transaction.publicKey, transaction.kind === 'kernel' ? 'kernel' : 'desktop')
     const prepareRestart = async () => {
@@ -550,18 +498,68 @@ export async function runWholeDesktopMigration(path) {
     } finally { await log.close() }
   } catch (error) {
     activated ||= error.activationUncertain === true
-    await report(transaction, 'failed', { error: error.message, activated,
+    await recordFailure(transaction, { error: error.message, activated,
       recovery: transaction.report.backupVerifiedAt
         ? `Preserved snapshot; explicit whole-group restore: ${transaction.node} ${transaction.workerPath} restore ${path} EMPTY_HOME`
-        : 'Cutover stopped before a verified snapshot; the old program and source data remain active. Review this report before retrying.' })
-    if (!activated) await releaseGate(transaction)
-    if (!activated && parentExited) {
-      spawn(transaction.oldExecutable, [], { detached: true, stdio: 'ignore', env: { ...process.env,
-        HOME: transaction.home, DSH_HOME: transaction.dshHome, ELECTRON_RUN_AS_NODE: undefined,
-        DSH_WHOLE_DESKTOP_TRANSACTION: undefined,
-        DSH_WHOLE_DESKTOP_FAILED: error.message } }).on('error', () => {}).unref()
+        : '升级在切换前中止，原程序和源数据未更换。请保留报告，解决错误后重试。' })
+    if (!activated) {
+      try { await releaseGate(transaction) }
+      catch (cleanupError) { await recordFailure(transaction, { fallbackError: `无法释放升级锁：${cleanupError.message}` }) }
     }
+    if (!activated && parentExited) await reopenOriginalDesktop(transaction)
     throw error
+  }
+}
+
+async function createMigrationBackup(transaction, roots, names, installation) {
+  await report(transaction, 'backup')
+  const manifest = { schemaVersion: 1, transactionId: transaction.transactionId, originalHome: transaction.home,
+    installation, roots: [] }
+  for (let i = 0; i < roots.length; i++) manifest.roots.push({ name: names[i], source: roots[i], entries: await snapshot(roots[i]) })
+  assertRestorableDataLinks(manifest.roots, transaction.home)
+  for (const entry of manifest.installation) if (entry.type === 'link') relocatedInstallationLink(entry, manifest.roots, transaction.home, transaction.home)
+  const inodes = new Set(manifest.roots.flatMap(root => (root.entries ?? []).map(entry => entry.inode)))
+  await assertNoWriters(roots, inodes)
+  const bytes = manifest.roots.reduce((total, root) => total + (root.entries ?? []).filter(entry => entry.type === 'file').reduce((size, entry) => size + entry.size, 0), 0)
+  const disk = await fs.statfs(transaction.directory, { bigint: true })
+  const requiredFreeBytes = BigInt(bytes) + BigInt(transaction.installBytes) * 2n + BigInt(transaction.release.asset.size) + 64n * 1024n ** 2n
+  if (disk.bavail * disk.bsize < requiredFreeBytes) fail('Insufficient free space for a complete verified backup and installation')
+  const staging = join(transaction.directory, 'backup.staging')
+  await privateDirectory(staging)
+  for (const root of manifest.roots) await copySnapshot(root.source, join(staging, root.name), root.entries)
+  await report(transaction, 'verifying-backup')
+  await verifySnapshot(staging, manifest)
+  await assertNoWriters(roots, inodes)
+  for (const root of manifest.roots) {
+    if (JSON.stringify(await snapshot(root.source)) !== JSON.stringify(root.entries)) fail('Source data changed during backup; desktop cutover stopped')
+  }
+  await atomicJson(join(staging, 'manifest.json'), manifest)
+  await fs.rename(staging, join(transaction.directory, 'backup'))
+  await report(transaction, 'backup-verified', { backupVerifiedAt: new Date().toISOString(), backupBytes: bytes,
+    installBytes: transaction.installBytes, requiredFreeBytes: String(requiredFreeBytes) })
+  return { manifest, inodes }
+}
+
+async function reopenOriginalDesktop(transaction) {
+  try {
+    const child = spawn(transaction.oldExecutable, [], { detached: true, stdio: 'ignore', env: { ...process.env,
+      HOME: transaction.home, DSH_HOME: transaction.dshHome, ELECTRON_RUN_AS_NODE: undefined,
+      DSH_WHOLE_DESKTOP_TRANSACTION: undefined, DSH_WHOLE_DESKTOP_FAILED: transaction.report.error,
+      DSH_WHOLE_DESKTOP_REPORT: join(transaction.directory, 'transaction.json') } })
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+    let earlyExit
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, 1_500)
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer)
+        earlyExit = `原版本重新打开后提前退出：${signal ?? code}`
+        resolve()
+      })
+    })
+    if (earlyExit) await recordFailure(transaction, { fallbackError: [transaction.report.fallbackError, earlyExit].filter(Boolean).join('\n') })
+    child.unref()
+  } catch (error) {
+    await recordFailure(transaction, { fallbackError: [transaction.report.fallbackError, `无法重新打开原版本：${error.message}`].filter(Boolean).join('\n') })
   }
 }
 

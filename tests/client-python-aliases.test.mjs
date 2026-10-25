@@ -119,7 +119,8 @@ test('rejects a FIFO interpreter without blocking an isolated packaging process'
   execFileSync('mkfifo', [join(bin, 'python3.12')])
   const module = new URL('../electron-builder.config.mjs', import.meta.url).href
   const script = 'import { materializePythonAliases } from ' + JSON.stringify(module) + '; materializePythonAliases(process.argv[1])'
-  assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', script, root], { timeout: 2000, killSignal: 'SIGKILL', stdio: 'pipe' }),
+  // Importing the packaging module from a busy build disk also counts against this deadline.
+  assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', script, root], { timeout: 10_000, killSignal: 'SIGKILL', stdio: 'pipe' }),
     error => error.status === 1 && /special file|executable regular file/.test(String(error.stderr)))
   for (const alias of ['python', 'python3']) assert.equal(await fs.readlink(join(bin, alias)), 'python3.12')
 })

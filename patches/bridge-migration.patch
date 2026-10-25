@@ -1,16 +1,35 @@
 diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
-index 42a045c..f1abe7b 100644
+index 42a045c..f3191cd 100644
 --- a/apps/desktop/src/main.ts
 +++ b/apps/desktop/src/main.ts
-@@ -167,6 +167,7 @@ interface WorkbenchUpdates {
+@@ -61,6 +61,8 @@ import { DesktopQuitConfirmation } from './quit-confirmation.ts'
+ import { DesktopTray } from './tray.ts'
+ import { DesktopBackgroundNotice } from './background-notice.ts'
+ 
++const migrationProgressIndex = process.argv.indexOf('--dsh-migration-progress')
++
+ let focusPrimaryWindow = (): void => {}
+ let stopForRecovery = async (): Promise<void> => {}
+ let shuttingDown = false
+@@ -83,7 +85,7 @@ const rendererConsole = new RendererConsoleTail()
+ 
+ // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
+ // set before ready so the first fatal report already resolves under it.
+-app.setAppLogsPath()
++if (migrationProgressIndex < 0) app.setAppLogsPath()
+ 
+ function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
+   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
+@@ -167,6 +169,8 @@ interface WorkbenchUpdates {
  
  /** Packaged downstream updater, emitted separately from the upstream main bundle. */
  interface WorkbenchUpdateModule {
++  showMigrationFailure(message: string, transactionPath?: string): Promise<void>
 +  assertWholeDesktopStartupAllowed(paths: { home: string; dshHome: string; userData: string }): Promise<void>
    createWorkbenchUpdates(options: {
      app: typeof app
      bundled: { dsh: string; runtime: string }
-@@ -175,6 +176,9 @@ interface WorkbenchUpdateModule {
+@@ -175,6 +179,9 @@ interface WorkbenchUpdateModule {
      prepareRestart: () => Promise<boolean>
      restart: (execPath?: string) => void
      finishRestart: () => void
@@ -20,7 +39,7 @@ index 42a045c..f1abe7b 100644
      recover: () => Promise<void>
      trustedSender: (event: IpcMainInvokeEvent) => boolean
    }): Promise<WorkbenchUpdates>
-@@ -410,15 +414,29 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+@@ -410,15 +417,30 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
  }
  
  async function main(): Promise<void> {
@@ -33,7 +52,8 @@ index 42a045c..f1abe7b 100644
 +    catch (error) {
 +      const message = error instanceof Error ? error.message : String(error)
 +      console.error(message)
-+      try { dialog.showErrorBox(app.getName(), message) }
++      try { await workbenchModule.showMigrationFailure(message, error instanceof Error && 'transactionPath' in error
++        && typeof error.transactionPath === 'string' ? error.transactionPath : undefined) }
 +      catch (dialogError) { console.error(dialogError) }
 +      app.exit(1)
 +      return
@@ -53,7 +73,7 @@ index 42a045c..f1abe7b 100644
        app,
        bundled: { dsh: join(app.getAppPath(), 'dsh'), runtime: join(process.resourcesPath, 'runtime') },
        verifyKernel: (dsh, version) => verifyDesktopRuntime(dsh, version, { platform: 'linux', arch: 'x64' }),
-@@ -426,6 +444,11 @@ async function main(): Promise<void> {
+@@ -426,6 +448,11 @@ async function main(): Promise<void> {
        prepareRestart: () => prepareWorkbenchRestart(),
        restart: (execPath) => { app.relaunch(execPath === undefined ? undefined : { execPath }) },
        finishRestart: () => { quitWithoutConfirmation() },
@@ -65,7 +85,7 @@ index 42a045c..f1abe7b 100644
        recover: () => recoverWorkbenchBackend(),
        trustedSender: (event) => {
          try { assertProductSender(event); return true }
-@@ -435,7 +458,6 @@ async function main(): Promise<void> {
+@@ -435,7 +462,6 @@ async function main(): Promise<void> {
      selectedKernel = workbench.selected
    }
    const resources = await runtimeResources()
@@ -73,3 +93,27 @@ index 42a045c..f1abe7b 100644
    let primaryRuntime = selectedKernel === undefined
      ? development ? developmentPrimaryRuntime() : join(process.resourcesPath, 'runtime', 'primary-runtime')
      : join(selectedKernel.runtime, 'primary-runtime')
+@@ -1509,6 +1535,17 @@ async function main(): Promise<void> {
+   publishUpdate(updateState)
+ }
+ 
++if (migrationProgressIndex >= 0) {
++  void import(new URL('./workbench-migration-progress.mjs', import.meta.url).href)
++    .then(module => module.runMigrationProgress(process.argv[migrationProgressIndex + 1]))
++    .catch(async (error: unknown) => {
++      console.error(error)
++      await app.whenReady()
++      const workbenchModule = await import(new URL('./workbench.mjs', import.meta.url).href) as WorkbenchUpdateModule
++      await workbenchModule.showMigrationFailure(error instanceof Error ? error.message : String(error))
++      app.exit(1)
++    }).catch((error: unknown) => { console.error(error); app.exit(1) })
++} else {
+ const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+ 
+ if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unknown) => {
+@@ -1523,3 +1560,5 @@ if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unk
+   console.error(error)
+   app.exit(1)
+ })
++
++}

@@ -8,7 +8,8 @@ const { build } = require(require.resolve('esbuild', { paths: [join(upstream, 'n
 const assets = join(root, 'build/workbench-assets')
 mkdirSync(assets, { recursive: true })
 rmSync(join(assets, 'install.py'), { force: true })
-for (const file of ['updates.html', 'updates.js', 'updates.css', 'preload.cjs', 'plugin-cli.mjs']) {
+for (const file of ['updates.html', 'updates.js', 'updates.css', 'preload.cjs', 'plugin-cli.mjs',
+  'migration-progress.html', 'migration-progress.js', 'migration-progress.css', 'migration-progress-preload.cjs']) {
   copyFileSync(join(root, 'updates', file), join(assets, file))
 }
 for (const file of ['desktop.json', 'updates.json']) copyFileSync(join(root, file), join(assets, file))
@@ -19,6 +20,7 @@ for (const [entry, outfile] of [
   ['updates/migration-worker.mjs', 'build/migration-worker.mjs'],
   ['scripts/install-user.mjs', 'build/install-user.mjs'],
   ['updates/desktop.mjs', 'build/upstream/apps/desktop/lib/workbench.mjs'],
+  ['updates/migration-progress.mjs', 'build/upstream/apps/desktop/lib/workbench-migration-progress.mjs'],
   ['updates/archive-worker.mjs', 'build/upstream/apps/desktop/lib/workbench-archive.mjs'],
   ['updates/migration-worker.mjs', 'build/upstream/apps/desktop/lib/workbench-migration-worker.mjs'],
   ['scripts/release-updates.mjs', 'build/release-updates.mjs'],

@@ -97,6 +97,10 @@ export default {
     try { migrationWorker = readFileSync(join(context.appOutDir, 'resources/app/lib/workbench-migration-worker.mjs')) }
     catch (error) { throw new Error('Desktop staging is missing its standalone migration worker', { cause: error }) }
     if (!migrationWorker.length) throw new Error('Desktop staging contains an empty migration worker')
+    for (const file of ['lib/workbench-migration-progress.mjs', 'workbench/migration-progress.html',
+      'workbench/migration-progress.js', 'workbench/migration-progress.css', 'workbench/migration-progress-preload.cjs']) {
+      if (!readFileSync(join(context.appOutDir, 'resources/app', file)).length) throw new Error('Desktop staging contains an empty migration progress asset: ' + file)
+    }
     materializePythonAliases(context.appOutDir)
     hardenPermissions(context.appOutDir)
   },
@@ -106,6 +110,7 @@ export default {
     'lib/workbench.mjs',
     'lib/workbench-archive.mjs',
     'lib/workbench-migration-worker.mjs',
+    'lib/workbench-migration-progress.mjs',
     { from: join(root, 'build/workbench-assets'), to: 'workbench', filter: ['**/*'] },
   ],
   extraMetadata: {

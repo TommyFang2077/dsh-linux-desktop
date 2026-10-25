@@ -320,6 +320,10 @@ test('afterPack removes the default ASAR before all artifact formats and rejects
   for (const file of ['desktop.json', 'updates.json']) writeFileSync(join(workbench, file), '{}')
   mkdirSync(join(appOutDir, 'resources/app/lib'))
   writeFileSync(join(appOutDir, 'resources/app/lib/workbench-migration-worker.mjs'), 'export const fixture = true')
+  for (const file of ['lib/workbench-migration-progress.mjs', 'workbench/migration-progress.html',
+    'workbench/migration-progress.js', 'workbench/migration-progress.css', 'workbench/migration-progress-preload.cjs']) {
+    writeFileSync(join(appOutDir, 'resources/app', file), 'progress fixture')
+  }
   const python = join(appOutDir, 'resources/runtime/primary-runtime/dependencies/python/bin')
   mkdirSync(python, { recursive: true })
   writeFileSync(join(python, 'python3.12'), 'interpreter fixture', { mode: 0o755 })

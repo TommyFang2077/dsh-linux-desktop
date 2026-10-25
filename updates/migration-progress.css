@@ -1,0 +1,9 @@
+progress { width: 100%; height: 12px; accent-color: #438cdf; }
+ol { margin: 0; padding-left: 24px; }
+li { padding: 3px 0; opacity: .65; }
+li.current { font-weight: 700; opacity: 1; }
+li.done { opacity: 1; }
+#error, #recovery, #fallback-error, #report-path, #processes { white-space: pre-wrap; overflow-wrap: anywhere; }
+#fallback-error { color: light-dark(#9d2424, #ffacac); }
+#report-path { font-size: 13px; opacity: .8; }
+button:focus-visible { outline: 3px solid #438cdf; outline-offset: 3px; }
